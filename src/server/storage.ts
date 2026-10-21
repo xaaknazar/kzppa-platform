@@ -50,6 +50,7 @@ const supabaseBackend: Backend = {
       method: "POST",
       headers: {
         authorization: `Bearer ${env.supabaseServiceKey}`,
+        apikey: env.supabaseServiceKey,
         "content-type": mime || "application/octet-stream",
         "x-upsert": "false", // объекты неизменяемы
       },
@@ -61,14 +62,14 @@ const supabaseBackend: Backend = {
   },
   async get(key) {
     const r = await fetch(`${env.supabaseUrl}/storage/v1/object/authenticated/${env.storageBucket}/${key}`, {
-      headers: { authorization: `Bearer ${env.supabaseServiceKey}` },
+      headers: { authorization: `Bearer ${env.supabaseServiceKey}`, apikey: env.supabaseServiceKey },
     });
     if (!r.ok) throw new Error(`Объект недоступен в хранилище (HTTP ${r.status})`);
     return new Uint8Array(await r.arrayBuffer());
   },
   async exists(key) {
     const r = await fetch(`${env.supabaseUrl}/storage/v1/object/info/authenticated/${env.storageBucket}/${key}`, {
-      headers: { authorization: `Bearer ${env.supabaseServiceKey}` },
+      headers: { authorization: `Bearer ${env.supabaseServiceKey}`, apikey: env.supabaseServiceKey },
     });
     return r.ok;
   },

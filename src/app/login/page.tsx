@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, count, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db, schema } from "@/db/client";
 import { Emblem } from "@/components/shell";
@@ -11,6 +11,8 @@ export const metadata = { title: "Вход" };
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   if (await getSessionUser()) redirect("/");
+  const [{ n: orgCount }] = await db.select({ n: count() }).from(schema.organizations);
+  if (orgCount === 0) redirect("/setup");
   const { error } = await searchParams;
   const demo = isDemoAuth();
   const people = demo
@@ -53,7 +55,11 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
                     <span className="text-[12px] text-ink-3">{p.roles.filter((r) => r !== "member").map((r) => ROLE_LABEL[r as keyof typeof ROLE_LABEL]).join(", ") || "Член комиссии"}</span>
                   </button>
                 ))}
-                {!list.length && <p className="text-[13.5px] text-ink-3">Состав не загружен. Выполните начальное заполнение базы.</p>}
+                {!list.length && (
+                  <p className="text-[13.5px] text-ink-3">
+                    Состав не загружен. <a className="text-petrol underline" href="/setup">Заполнить демонстрационными данными</a>
+                  </p>
+                )}
               </form>
             </>
           ) : (

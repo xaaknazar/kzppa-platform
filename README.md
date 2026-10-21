@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Платформа КЗППА РКА
 
-## Getting Started
+Единая платформа работы Комиссии по защите профессиональных прав адвокатов Республиканской коллегии адвокатов. Покрывает весь маршрут: письмо РКА → регистрация → поручение → проект → голосование → протокол → финал → PDF с QR → личная ЭЦП → комплект в РКА → архив. Реализована по ТЗ редакции 3.0 от 21.10.2026.
 
-First, run the development server:
+## Стек
+
+- Next.js 15 (App Router), TypeScript, Tailwind CSS 4. Хостинг — Vercel (регион `fra1`).
+- Postgres (Supabase) через Drizzle ORM. База — источник истины для реестра, статусов и связей (BR-02).
+- Supabase Auth (вход по коду на почту) и Supabase Storage (неизменяемые объекты по SHA-256).
+- Gmail API — почта комиссии `kzppa.rka@gmail.com`. SIGEX — подписание через eGov Mobile/Business.
+
+## Где что лежит
+
+| Путь | Содержимое |
+| --- | --- |
+| `src/domain/` | Правила ТЗ без побочных эффектов: нумерация 001/01 (DOC-08), кворум и протокол (FLOW-06/12), сопоставление писем (CASE-02/03), манифест вложений (MAIL-06), состояния (раздел 13), права (раздел 4), хеши согласий (BR-04, OUT-01, DOC-12) |
+| `src/db/schema.ts`, `drizzle/` | Схема и миграции. `0001_guards.sql` — триггеры: подписанная версия и протокол неизменяемы, аудит только на дозапись, физическое удаление оригиналов запрещено |
+| `src/server/command.ts` | Команды: проверка прав, ключ идемпотентности, транзакция, аудит |
+| `src/server/audit.ts` | Журнал с цепочкой хешей (AUD-02) |
+| `src/server/outbox.ts` | Transactional outbox, повторы с backoff, dead-letter (ARCH-03) |
+| `src/server/services/` | Регистрация, поручения, рассмотрение, подписание, исходящие, реестр (37 столбцов, раздел 25), приём почты |
+| `src/integrations/` | Адаптеры почты и подписи по контрактам ARCH-07, боевые и тестовые (`dry-run`) |
+| `src/server/docs/` | PDF заключения с QR, протокол, сопроводительное DOCX |
+| `tests/` | Модульные тесты на числах из приёмочных сценариев |
+
+## Развёртывание
+
+1. Создать проект Supabase. В Storage создать **приватный** bucket `kzppa-objects`. В Auth → Email Templates в шаблоне «Magic Link» вставить `{{ .Token }}`, чтобы приходил код.
+2. В Vercel импортировать репозиторий и задать переменные из `.env.example`.
+3. Применить миграции и заполнить базу (локально, с `DATABASE_URL` на Supabase):
+   ```bash
+   npm ci
+   DATABASE_URL=... npx tsx scripts/migrate.mts
+   DATABASE_URL=... SEED_ADMIN_EMAIL=you@example.kz npx tsx --conditions=react-server scripts/seed.mts
+   # демонстрационный состав и дела — только для тестовой среды:
+   DATABASE_URL=... DEMO_SEED=1 npx tsx --conditions=react-server scripts/seed.mts
+   ```
+4. Google Cloud: включить Gmail API, в OAuth-клиенте добавить redirect URI `https://<домен>/api/integrations/gmail/callback`, в consent screen — тестового пользователя `kzppa.rka@gmail.com`. В платформе: Администрирование → Подключения → «Подключить Gmail» под учётной записью комиссии.
+5. Боевой режим: `MAIL_TRANSPORT=gmail`, `SIGN_PROVIDER=sigex`, `AUTH_MODE=supabase`. Пока они в `dry-run`, вверху интерфейса видна полоса тестового режима.
+
+## Проверки
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npx vitest run        # доменные правила и документы
+npx tsc --noEmit      # типы
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Что требует решения заказчика (раздел 22)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **DEC-02.** Правило определения решения переносится из действующего Положения: Администрирование → Общие настройки, с указанием пункта и редакции. Пока правило не задано, протокол показывает «Решение не определено», и маршрут дальше протокола не идёт. Платформа большинство не выбирает.
+- **DEC-01.** Буквенный префикс и место года в полном номере исходящего — настройки организации.
+- **DEC-05.** Шаблоны RU/KK поручения и сопроводительного — к утверждению; профили членов должны содержать подтверждённое обращение по имени и отчеству.
+- **ACL-05.** Материалы хранятся в платформе, а не в общих папках Drive. Исполнители и члены комиссии работают через ограниченные области с серверной проверкой прав.

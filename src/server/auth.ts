@@ -41,7 +41,7 @@ export async function supabaseServer() {
   });
 }
 
-async function loadUserById(userId: string): Promise<SessionUser | null> {
+export async function loadUserById(userId: string): Promise<SessionUser | null> {
   const u = await db.query.users.findFirst({ where: and(eq(schema.users.id, userId), eq(schema.users.status, "active")) });
   if (!u) return null;
   const today = new Date().toISOString().slice(0, 10);

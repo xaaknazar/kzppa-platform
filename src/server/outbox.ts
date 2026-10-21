@@ -108,7 +108,7 @@ export async function processOutbox(opts: { limit?: number; types?: OutboxType[]
       if (r.status === "done") {
         await db.update(schema.outbox).set({ status: "done", doneAt: new Date(), lockedUntil: null, lastError: null }).where(eq(schema.outbox.id, row.id));
       } else if (r.status === "dead" || row.attempts + 1 >= MAX_ATTEMPTS) {
-        await db.update(schema.outbox).set({ status: "dead", lockedUntil: null, lastError: r.status === "done" ? null : r.error }).where(eq(schema.outbox.id, row.id));
+        await db.update(schema.outbox).set({ status: "dead", lockedUntil: null, lastError: r.error }).where(eq(schema.outbox.id, row.id));
       } else {
         await db
           .update(schema.outbox)

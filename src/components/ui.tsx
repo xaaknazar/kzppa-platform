@@ -76,7 +76,7 @@ export function PageHeader({ title, lead, actions, serif }: { title: ReactNode; 
     <header className="mb-6 flex flex-wrap items-end justify-between gap-4 border-b border-line pb-5">
       <div className="min-w-0">
         <h1 className={clsx("text-[26px] leading-tight text-ink", serif ? "font-serif" : "font-semibold tracking-[-0.01em]")}>{title}</h1>
-        {lead && <p className="mt-1.5 max-w-[68ch] text-[14px] text-ink-3">{lead}</p>}
+        {lead && <p className="mt-1.5 line-clamp-2 max-w-[72ch] text-[14px] text-ink-3">{lead}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </header>

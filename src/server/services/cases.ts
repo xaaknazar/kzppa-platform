@@ -28,40 +28,8 @@ async function nextCaseNumber(tx: Tx, orgId: string, year: number) {
   return (r?.m ?? 0) + 1;
 }
 
-/** CASE-07: машинный проект поля D по тексту письма; город в подписи РКА не является коллегией. */
-export function extractCollegiumCandidates(text: string): string[] {
-  const out = new Set<string>();
-  const re =
-    /(?:коллеги[ияей]\s+адвокатов|адвокатск\S+\s+коллеги\S+|адвокаттар\s+алқасы\S*)\s+((?:города|г\.|области|обл\.|[А-ЯЁӘҒҚҢӨҰҮҺІ][\wәғқңөұүһі-]+)(?:\s+[А-ЯЁӘҒҚҢӨҰҮҺІ][\wәғқңөұүһі-]+){0,3})/giu;
-  const signature = text.split(/\n\s*(?:--|С уважением|Құрметпен)/i)[0];
-  for (const m of signature.matchAll(re)) {
-    const v = m[0].replace(/\s+/g, " ").trim();
-    if (!/республиканск/i.test(v)) out.add(v);
-  }
-  // «…ской области коллегии адвокатов», «Алматинская городская коллегия адвокатов»
-  const re2 = /([А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі-]+(?:ская|ской|ск\S{0,3})\s+(?:областн\S+|городск\S+)\s+коллеги\S+\s+адвокатов)/gu;
-  for (const m of signature.matchAll(re2)) out.add(m[1].trim());
-  return [...out].slice(0, 5);
-}
-
-/** CASE-07: машинный проект поля F — первые содержательные предложения с указанием источника. */
-export function machineSummary(text: string): string | null {
-  const clean = text
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !/^(>|--|С уважением|Құрметпен|Тел|Email|e-mail|From:|Sent:)/i.test(l))
-    .join(" ")
-    .replace(/\s+/g, " ");
-  if (clean.length < 40) return null;
-  const sentences = clean.match(/[^.!?]+[.!?]/g) ?? [clean];
-  let out = "";
-  for (const s of sentences) {
-    if ((out + s).length > 420) break;
-    out += s;
-  }
-  return (out || clean.slice(0, 420)).trim();
-}
+export { collegiumNominative, extractCollegiumCandidates, machineSummary } from "@/domain/extract";
+import { extractCollegiumCandidates, machineSummary } from "@/domain/extract";
 
 export function categoryForIntake(kind: string | null | undefined): DocCategory {
   switch (kind) {

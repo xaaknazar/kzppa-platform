@@ -22,55 +22,6 @@ import { ensureHandlers } from "./handlers";
 import { processOutbox } from "./outbox";
 import { env } from "./env";
 
-const fontFile = (name: string) => readFile(path.join(process.cwd(), "src/server/docs/fonts", name));
-
-function must<T>(r: { ok: true; data: T } | { ok: false; error: string }, what: string): T {
-  if (!r.ok) throw new Error(`${what}: ${r.error}`);
-  return r.data;
-}
-
-
-async function makePdf(title: string, paragraphs: string[]) {
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  doc.setCreationDate(new Date("2026-10-01T09:00:00Z"));
-  doc.setModificationDate(new Date("2026-10-01T09:00:00Z"));
-  const font = await doc.embedFont(await fontFile("PT_Serif-Web-Regular.ttf"), { subset: true });
-  const bold = await doc.embedFont(await fontFile("PT_Serif-Web-Bold.ttf"), { subset: true });
-  let page = doc.addPage([595.28, 841.89]);
-  let y = 780;
-  page.drawText(title, { x: 70, y, size: 14, font: bold, color: rgb(0.09, 0.13, 0.17) });
-  y -= 30;
-  for (const p of paragraphs) {
-    const words = p.split(" ");
-    let line = "";
-    for (const w of words) {
-      const t = line ? `${line} ${w}` : w;
-      if (font.widthOfTextAtSize(t, 11.5) > 455) {
-        page.drawText(line, { x: 70, y, size: 11.5, font });
-        y -= 16;
-        line = w;
-        if (y < 70) {
-          page = doc.addPage([595.28, 841.89]);
-          y = 780;
-        }
-      } else line = t;
-    }
-    if (line) page.drawText(line, { x: 70, y, size: 11.5, font });
-    y -= 26;
-  }
-  return new Uint8Array(await doc.save());
-}
-
-async function makeDocx(title: string, paragraphs: string[]) {
-  const d = new Document({
-    creator: "Исполнитель",
-    sections: [{ children: [new Paragraph({ children: [new TextRun({ text: title, bold: true, size: 28, font: "PT Serif" })] }), ...paragraphs.map((t) => new Paragraph({ spacing: { after: 160 }, children: [new TextRun({ text: t, size: 24, font: "PT Serif" })] }))] }],
-  });
-  return new Uint8Array(await Packer.toBuffer(d));
-}
-
-
 export async function runSeed(opts: { demo: boolean; adminEmail?: string | null }): Promise<string[]> {
   const logs: string[] = [];
   const log = (...a: unknown[]) => {
@@ -170,7 +121,7 @@ export async function runSeed(opts: { demo: boolean; adminEmail?: string | null 
   }
 
   if (adminEmail) {
-    await addUser({ fullName: "Администратор платформы", firstName: "Администратор", email: adminEmail, roles: ["tech_admin", "chair", "secretary"] });
+    await addUser({ fullName: "Администратор платформы", firstName: "Администратор", email: adminEmail, roles: demo ? ["tech_admin"] : ["tech_admin", "chair", "secretary"] });
     log(`Администратор ${adminEmail} добавлен`);
   }
 
@@ -334,11 +285,13 @@ export async function runSeed(opts: { demo: boolean; adminEmail?: string | null 
     const s = must(await signing.startSigning(chair, { documentVersionId: prep.versionId, idempotencyKey: k() }), "Подписание 001") as { sessionId: string };
     const sess = (await db.query.signSessions.findFirst({ where: eq(schema.signSessions.id, s.sessionId) }))!;
     await db.update(schema.signSessions).set({ urls: { ...(sess.urls as object), devApproved: true } }).where(eq(schema.signSessions.id, s.sessionId));
-    for (let i = 0; i < 6; i++) {
-      await db.update(schema.outbox).set({ nextAttemptAt: new Date() }).where(eq(schema.outbox.status, "pending"));
+    // Фоновый приём подписи: опрос → сохранение → регистрация → проверка (SIGN-03/04).
+    for (let i = 0; i < 40; i++) {
+      await db.update(schema.outbox).set({ nextAttemptAt: new Date(), lockedUntil: null }).where(eq(schema.outbox.status, "pending"));
       await processOutbox({ limit: 10 });
       const st = (await db.query.signSessions.findFirst({ where: eq(schema.signSessions.id, s.sessionId) }))!;
-      if (st.state === "verified") break;
+      if (["verified", "expired", "refused", "error", "auth_required"].includes(st.state)) break;
+      await new Promise((r) => setTimeout(r, 500));
     }
     const finalSess = (await db.query.signSessions.findFirst({ where: eq(schema.signSessions.id, s.sessionId) }))!;
     log(`  ЭЦП дела 001: ${finalSess.state}`);

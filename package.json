@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "migrate": "tsx scripts/migrate.mts",
-    "seed": "tsx --conditions=react-server scripts/seed.mts",
+    "seed": "tsx --require ./scripts/server-only-shim.cjs scripts/seed.mts",
     "test": "vitest run"
   },
   "dependencies": {

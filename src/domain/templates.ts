@@ -6,6 +6,14 @@
 
 import type { Lang } from "./types";
 
+/** Обращение по отчеству: «-овна/-евна/-ична/-кызы» — «Уважаемая», «-ович/-евич/-ич/-улы» — «Уважаемый». */
+export function salutationRu(patronymic: string | null | undefined) {
+  const p = (patronymic ?? "").trim().toLowerCase();
+  if (/(вна|чна|кызы|қызы)$/.test(p)) return "Уважаемая";
+  if (/(вич|ич|улы|ұлы)$/.test(p)) return "Уважаемый";
+  return "Уважаемый(ая)";
+}
+
 export interface AssignmentTemplateData {
   addressee: { firstName: string; patronymic: string | null }; // из подтверждённого профиля
   caseNumber: string; // «001»
@@ -44,8 +52,8 @@ export function assignmentLetter(lang: Lang, d: AssignmentTemplateData): { subje
           `Құрметпен,\n${d.commissionName} төрағасы\n${d.chairFullName}`,
         ]
       : [
-          `Уважаемый(ая) ${name}!`,
-          `В Комиссию поступило обращение адвоката ${d.applicant}, направленное Республиканской коллегией адвокатов письмом №${d.rkaNumber} от ${d.rkaDate} (поступило ${d.receivedAt}). Номер дела в Комиссии — №${d.caseNumber}.`,
+          `${salutationRu(d.addressee.patronymic)} ${name}!`,
+          `Республиканская коллегия адвокатов письмом №${d.rkaNumber} от ${d.rkaDate} направила в Комиссию обращение адвоката (поступило ${d.receivedAt}). Заявитель — ${d.applicant}. Номер дела в Комиссии — №${d.caseNumber}.`,
           `Обстоятельства: ${d.summary}`,
           `Вам поручается: ${d.subject}. Прошу изучить материалы и подготовить проект заключения.`,
           `Срок — до ${d.deadline}.`,
@@ -95,7 +103,7 @@ export function coverLetter(lang: Lang, d: CoverLetterData) {
     ? `${d.commissionName} №${d.caseNumber} іс бойынша адвокат ${d.applicant} өтініші бойынша ${
         d.supplementary ? "қосымша " : ""
       }қорытындыны жолдайды. ${d.purpose}`
-    : `${d.commissionName} направляет ${d.supplementary ? "дополнительное " : ""}заключение по обращению адвоката ${d.applicant} (дело №${d.caseNumber}). ${d.purpose}`;
+    : `${d.commissionName} направляет ${d.supplementary ? "дополнительное " : ""}заключение по делу №${d.caseNumber} (заявитель — ${d.applicant}). ${d.purpose}`;
   const attachHeader = isKk ? "Қосымша:" : "Приложение:";
   const attachLines = d.attachments.map(
     (a, i) => `${i + 1}. ${a.name}${a.pages ? (isKk ? `, ${a.pages} п.` : `, на ${a.pages} л.`) : ""}`,

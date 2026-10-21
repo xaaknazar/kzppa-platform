@@ -463,7 +463,7 @@ export function SignPanel({ caseId, versionId, lastSession }: { caseId: string; 
     run(async () => {
       const r = await startSigningAction({ documentVersionId: versionId, idempotencyKey: key, caseId });
       if (r.ok) {
-        const data = r.data as { sessionId: string } & SignStatus;
+        const data = r.data as unknown as { sessionId: string } & SignStatus;
         setSession(data.sessionId);
         setStatus({ ...data, state: "waiting" });
       }

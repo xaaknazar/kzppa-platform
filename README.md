@@ -31,9 +31,9 @@
    ```bash
    npm ci
    DATABASE_URL=... npx tsx scripts/migrate.mts
-   DATABASE_URL=... SEED_ADMIN_EMAIL=you@example.kz npx tsx --conditions=react-server scripts/seed.mts
+   DATABASE_URL=... SEED_ADMIN_EMAIL=you@example.kz npm run seed
    # демонстрационный состав и дела — только для тестовой среды:
-   DATABASE_URL=... DEMO_SEED=1 npx tsx --conditions=react-server scripts/seed.mts
+   DATABASE_URL=... DEMO_SEED=1 npm run seed
    ```
 4. Google Cloud: включить Gmail API, в OAuth-клиенте добавить redirect URI `https://<домен>/api/integrations/gmail/callback`, в consent screen — тестового пользователя `kzppa.rka@gmail.com`. В платформе: Администрирование → Подключения → «Подключить Gmail» под учётной записью комиссии.
 5. Боевой режим: `MAIL_TRANSPORT=gmail`, `SIGN_PROVIDER=sigex`, `AUTH_MODE=supabase`. Пока они в `dry-run`, вверху интерфейса видна полоса тестового режима.

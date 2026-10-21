@@ -9,7 +9,7 @@ export const env = {
   appUrl: (process.env.APP_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/$/, ""),
   authMode: (process.env.AUTH_MODE ?? (process.env.NEXT_PUBLIC_SUPABASE_URL ? "supabase" : "demo")) as "supabase" | "demo",
   supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
-  supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+  supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "",
   supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
   storageBucket: process.env.STORAGE_BUCKET ?? "kzppa-objects",
   mailTransport: (process.env.MAIL_TRANSPORT ?? "dry-run") as "gmail" | "dry-run",

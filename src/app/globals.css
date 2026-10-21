@@ -1,26 +1,105 @@
 @import "tailwindcss";
 
+/*
+ * Дизайн-система КЗППА РКА.
+ * Холодная бумага, чернила, петроль как основной цвет действия.
+ * Сигнальное золото — только для ЭЦП, утверждений и печати.
+ */
+@theme {
+  --font-sans: var(--font-golos), "Golos Text", system-ui, sans-serif;
+  --font-serif: var(--font-ptserif), "PT Serif", Georgia, serif;
+
+  --color-paper: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-sunken: #eef1f4;
+  --color-line: #dde2e8;
+  --color-line-strong: #c6cdd6;
+  --color-ink: #17202b;
+  --color-ink-2: #3d4856;
+  --color-ink-3: #66717f;
+  --color-ink-4: #8d97a3;
+
+  --color-petrol: #0f4c5c;
+  --color-petrol-600: #0d4251;
+  --color-petrol-700: #0a3540;
+  --color-petrol-50: #e8f1f3;
+  --color-petrol-100: #d2e4e8;
+
+  --color-seal: #a87a1f;
+  --color-seal-50: #f8f1e1;
+  --color-seal-100: #efe1bd;
+
+  --color-ok: #2f6b43;
+  --color-ok-50: #e9f3ec;
+  --color-warn: #8a5a00;
+  --color-warn-50: #fbf2df;
+  --color-bad: #a3302a;
+  --color-bad-50: #f9e9e7;
+  --color-info: #2c5a8c;
+  --color-info-50: #e8eff8;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  font-feature-settings: "tnum" 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-number {
+  font-family: var(--font-serif);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-petrol);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+::selection {
+  background: var(--color-petrol-100);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Таблица реестра: читаемая плотность, закреплённая шапка */
+.reg-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-sunken);
+}
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
 }

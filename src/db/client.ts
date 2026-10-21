@@ -5,10 +5,20 @@ import * as schema from "./schema";
 
 const globalForDb = globalThis as unknown as { __kzppaSql?: ReturnType<typeof postgres> };
 
+/**
+ * Строка подключения: DATABASE_URL или переменные интеграции Vercel–Supabase (POSTGRES_URL).
+ * Служебные параметры пулера (pgbouncer, supa) удаляются — драйвер передал бы их серверу как настройки.
+ */
+export function cleanConnectionString(raw: string) {
+  const u = new URL(raw);
+  for (const k of [...u.searchParams.keys()]) if (k !== "sslmode") u.searchParams.delete(k);
+  return u.toString();
+}
+
 function connectionString() {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL не задан. Укажите строку подключения к Postgres (Supabase).");
-  return url;
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  if (!url) throw new Error("Не задана строка подключения к Postgres: DATABASE_URL или POSTGRES_URL.");
+  return cleanConnectionString(url);
 }
 
 export const sqlClient =

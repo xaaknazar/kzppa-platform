@@ -1,8 +1,19 @@
+/**
+ * Применение миграций.
+ * На Vercel — только при production-сборке: preview-ветки используют ту же базу
+ * и не должны менять её схему непроверенными миграциями.
+ * Параллельные запуски сериализуются advisory-lock'ом на одном соединении.
+ */
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 
-// Миграции — через прямое (session) подключение: транзакционный пулер не держит advisory-lock и DDL-сессию.
+if (process.env.VERCEL && process.env.VERCEL_ENV !== "production") {
+  console.log(`Сборка ${process.env.VERCEL_ENV}: миграции пропущены (применяются только при production-сборке)`);
+  process.exit(0);
+}
+
+// Прямое (session) подключение: транзакционный пулер не держит advisory-lock и DDL-сессию.
 const raw = process.env.POSTGRES_URL_NON_POOLING || process.env.DATABASE_URL || process.env.POSTGRES_URL;
 if (!raw) {
   if (process.env.VERCEL) {
@@ -13,6 +24,13 @@ if (!raw) {
 const u = new URL(raw ?? "postgres://postgres:postgres@localhost:5432/kzppa");
 for (const k of [...u.searchParams.keys()]) if (k !== "sslmode") u.searchParams.delete(k);
 const sql = postgres(u.toString(), { max: 1, prepare: false, onnotice: () => {} });
-await migrate(drizzle(sql), { migrationsFolder: "./drizzle" });
-console.log("Миграции применены");
-await sql.end();
+
+const LOCK = 7_420_001; // произвольный постоянный ключ блокировки миграций
+await sql`select pg_advisory_lock(${LOCK})`;
+try {
+  await migrate(drizzle(sql), { migrationsFolder: "./drizzle" });
+  console.log("Миграции применены");
+} finally {
+  await sql`select pg_advisory_unlock(${LOCK})`;
+  await sql.end();
+}

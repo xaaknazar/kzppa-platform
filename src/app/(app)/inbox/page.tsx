@@ -19,14 +19,14 @@ export const metadata = { title: "Разбор почты" };
 
 const OPEN_STATES: IntakeState[] = ["needs_review", "incomplete", "matched", "quarantine"];
 
-const FILTERS = [
-  { key: "review", label: "Требует разбора", states: ["needs_review", "matched", "verified"] as string[] | null },
+type FilterKey = "review" | "incomplete" | "quarantine" | "all";
+
+const FILTERS: { key: FilterKey; label: string; states: string[] | null }[] = [
+  { key: "review", label: "Требует разбора", states: ["needs_review", "matched", "verified"] },
   { key: "incomplete", label: "Не завершена загрузка", states: ["incomplete", "loading", "discovered", "access_error"] },
   { key: "quarantine", label: "Карантин", states: ["quarantine"] },
   { key: "all", label: "Все неприобщённые", states: null },
-] as const;
-
-type FilterKey = (typeof FILTERS)[number]["key"];
+];
 
 const INTAKE_TONE: Record<string, Tone> = {
   needs_review: "warn",
@@ -63,7 +63,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
 
   const sp = await searchParams;
   const fRaw = typeof sp.f === "string" ? sp.f : "review";
-  const active: FilterKey = (FILTERS.find((f) => f.key === fRaw)?.key ?? "review") as FilterKey;
+  const active: FilterKey = FILTERS.find((f) => f.key === fRaw)?.key ?? "review";
 
   const m = schema.messages;
   const rows = await db

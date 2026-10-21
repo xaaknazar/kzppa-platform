@@ -810,3 +810,78 @@ export function buildMimeMessage(mail: OutgoingMail, opts: BuildOptions = {}): s
   lines.push(`--${mixed}--`, "");
   return lines.join("\r\n");
 }
+
+/* ────────────────────────────── Контейнеры (MAIL-05, MAIL-09) ────────────────────────────── */
+
+export interface ArchiveInfo {
+  kind: "zip" | "rar" | "7z" | null;
+  encrypted: boolean | null; // null — определить без распаковки нельзя
+  entries: number | null;
+  corrupt: boolean;
+}
+
+/**
+ * Определение архива по сигнатуре и признака шифрования ZIP (бит 0 general purpose flag
+ * в центральном каталоге или, при его отсутствии, в локальных заголовках). Без распаковки.
+ */
+export function inspectArchive(bytes: Uint8Array): ArchiveInfo {
+  const b = bytes;
+  const sig = (o: number, s: number[]) => s.every((x, i) => b[o + i] === x);
+  if (b.length >= 6 && sig(0, [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07])) return { kind: "rar", encrypted: null, entries: null, corrupt: false };
+  if (b.length >= 6 && sig(0, [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])) return { kind: "7z", encrypted: null, entries: null, corrupt: false };
+  if (!(b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07))) {
+    return { kind: null, encrypted: null, entries: null, corrupt: false };
+  }
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const u16 = (o: number) => dv.getUint16(o, true);
+  const u32 = (o: number) => dv.getUint32(o, true);
+  // EOCD: 0x06054b50, ищем с конца (комментарий до 65535 байт).
+  let eocd = -1;
+  for (let i = b.length - 22; i >= Math.max(0, b.length - 22 - 65535); i--) {
+    if (b[i] === 0x50 && b[i + 1] === 0x4b && b[i + 2] === 0x05 && b[i + 3] === 0x06) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd >= 0) {
+    const total = u16(eocd + 10);
+    let off = u32(eocd + 16);
+    let encrypted = false;
+    let n = 0;
+    if (off !== 0xffffffff && off < b.length) {
+      for (; n < total && off + 46 <= b.length; n++) {
+        if (u32(off) !== 0x02014b50) return { kind: "zip", encrypted: null, entries: n, corrupt: true };
+        if (u16(off + 8) & 1) encrypted = true;
+        off += 46 + u16(off + 28) + u16(off + 30) + u16(off + 32);
+      }
+      return { kind: "zip", encrypted, entries: total, corrupt: n < total };
+    }
+  }
+  // Нет центрального каталога (ZIP64/повреждён) — смотрим локальные заголовки.
+  let off = 0;
+  let encrypted = false;
+  let n = 0;
+  while (off + 30 <= b.length && u32(off) === 0x04034b50 && n < 10000) {
+    const flags = u16(off + 6);
+    if (flags & 1) encrypted = true;
+    if (flags & 8) break; // размер в data descriptor — дальше без распаковки не пройти
+    off += 30 + u32(off + 18) + u16(off + 26) + u16(off + 28);
+    n++;
+  }
+  return { kind: "zip", encrypted: encrypted || null, entries: n || null, corrupt: eocd < 0 };
+}
+
+/** Значение заголовка из исходного EML (только блок заголовков верхнего уровня, с развёрткой строк). */
+export function extractRawHeader(raw: Uint8Array | null | undefined, name: string): string | null {
+  if (!raw?.byteLength) return null;
+  const head = new TextDecoder("latin1").decode(raw.subarray(0, Math.min(raw.byteLength, 256 * 1024)));
+  const end = head.search(/\r?\n\r?\n/);
+  const block = (end >= 0 ? head.slice(0, end) : head).replace(/\r?\n[ \t]+/g, " ");
+  const re = new RegExp(`^${name.replace(/[-]/g, "\\-")}:[ \\t]*(.*)$`, "im");
+  return block.match(re)?.[1]?.trim() ?? null;
+}
+
+/** Postgres text не принимает NUL; длинные поля обрезаются до разумного предела. */
+export function cleanText(s: string | null | undefined, max = 5_000_000): string {
+  return (s ?? "").replace(/\u0000/g, "").slice(0, max);
+}

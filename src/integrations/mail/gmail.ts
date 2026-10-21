@@ -46,13 +46,20 @@ import {
 
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
 export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/gmail.send",
 ] as const;
+
+/** OAuth-подключение (MAIL-02): cookie с подписанным state и путь возврата. */
+export const OAUTH_STATE_COOKIE = "kzppa_gmail_oauth_state";
+export const OAUTH_STATE_PURPOSE = "gmail-oauth-state";
+export const OAUTH_STATE_TTL_SEC = 10 * 60;
+export const OAUTH_CALLBACK_PATH = "/api/integrations/gmail/callback";
+export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
 export const MAX_MESSAGE_BYTES = 25 * 1024 * 1024; // лимит хранения исходного EML и вложения
 const INITIAL_PAGE_SIZE = 50;
@@ -110,7 +117,7 @@ async function refreshAccessToken(accountId: string): Promise<string> {
   const refreshToken = decryptSecret(acc.refreshTokenEnc, refreshTokenAad(acc.organizationId, acc.email));
   let res: Response;
   try {
-    res = await fetch(TOKEN_URL, {
+    res = await fetch(GOOGLE_TOKEN_URL, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({

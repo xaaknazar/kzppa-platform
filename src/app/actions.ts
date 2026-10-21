@@ -126,3 +126,8 @@ export async function rejectPackageAction(input: { outgoingId: string; reason: s
   const u = await requireUser();
   return done(await out.rejectPackage(u, input), `/cases/${input.caseId}`, "/approvals");
 }
+
+export async function resolveUnknownSendAction(input: { outgoingId: string; decision: "resend" | "confirm_sent"; basis: string; caseId: string }) {
+  const u = await requireUser();
+  return done(await out.resolveUnknownSend(u, input), `/cases/${input.caseId}`, "/outgoing");
+}

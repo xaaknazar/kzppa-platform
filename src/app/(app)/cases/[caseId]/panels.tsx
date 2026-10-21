@@ -16,6 +16,7 @@ import {
   prepareRkaPackageAction,
   rejectAssignmentAction,
   rejectPackageAction,
+  resolveUnknownSendAction,
   resubmitAssignmentAction,
   updateCaseFieldsAction,
   updatePackageFilesAction,
@@ -611,6 +612,26 @@ export function PackagePanel({ caseId, outgoing: o, draftOptions, included, lang
         </div>
       )}
       <p className="mt-3 text-[12.5px] text-ink-3">Согласие относится к этой версии комплекта. Изменение адресата, текста или файлов потребует повторного согласия. CMS и служебные журналы в письмо не входят.</p>
+    </div>
+  );
+}
+
+/* ───────── Неизвестный результат отправки (OUT-06) ───────── */
+
+export function UnknownSendPanel({ caseId, outgoingId, needsDecision }: { caseId: string; outgoingId: string; needsDecision: boolean }) {
+  const { pending, error, run } = useAction();
+  const [basis, setBasis] = useState("");
+  if (!needsDecision) return <p className="mt-3 text-[13px] text-ink-3">Идёт автоматическая сверка с папкой «Отправленные». Повторная отправка не выполняется.</p>;
+  return (
+    <div className="mt-4 rounded-md border border-bad/30 bg-bad-50/50 p-4">
+      <p className="text-[14px] font-medium text-ink">Две сверки не нашли письмо в «Отправленных»</p>
+      <p className="mt-1 text-[13.5px] text-ink-2">Откройте ящик комиссии и проверьте папку «Отправленные». Отсутствие письма в поиске ещё не доказывает, что оно не ушло.</p>
+      <div className="mt-3"><Field label="Что показала проверка"><Input value={basis} onChange={(e) => setBasis(e.target.value)} placeholder="Например: письма от 21.10 в «Отправленных» нет" /></Field></div>
+      <Err error={error} />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button variant="secondary" disabled={pending || basis.trim().length < 5} onClick={() => run(() => resolveUnknownSendAction({ caseId, outgoingId, decision: "confirm_sent", basis }))}>Письмо найдено — отметить отправленным</Button>
+        <Button disabled={pending || basis.trim().length < 5} onClick={() => run(() => resolveUnknownSendAction({ caseId, outgoingId, decision: "resend", basis }))}>Письма нет — отправить повторно</Button>
+      </div>
     </div>
   );
 }

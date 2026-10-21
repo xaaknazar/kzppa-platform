@@ -24,6 +24,7 @@ import {
   PreparePdfPanel,
   PreparePackageForm,
   SignPanel,
+  UnknownSendPanel,
 } from "./panels";
 
 export const dynamic = "force-dynamic";
@@ -412,6 +413,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
                     <PackagePanel caseId={kase.id} outgoing={{ id: o.id, version: o.version, hash: o.packageHash ?? "", subject: o.subject, body: o.bodyText, to: o.toAddrs, from: o.fromAddr, lang: o.lang ?? "ru", number: o.numberDisplay ?? "" }} draftOptions={drafts.filter((x) => x.v.format === "docx").map((x) => ({ id: x.v.id, name: x.v.filename ?? x.d.title }))} included={(o.manifest as { role: string; versionId: string }[]).filter((m) => m.role === "draft_attachment").map((m) => m.versionId)} langMismatch={!!langMismatch} />
                   </div>
                 )}
+                {o.state === "unknown_result" && <UnknownSendPanel caseId={kase.id} outgoingId={o.id} needsDecision={!!(o.reconcile as { needsDecision?: boolean } | null)?.needsDecision} />}
                 {o.rejectedReason && <p className="mt-3 text-[13px] text-bad">Отклонено: {o.rejectedReason}</p>}
               </Section>
             ))}

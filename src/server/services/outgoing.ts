@@ -331,13 +331,52 @@ async function reconcileHandler(row: OutboxRow) {
       await setOutState(tx, { id: fresh.id, state: fresh.state, version: fresh.version }, "sent", { providerMessageId: found.providerMessageId, providerThreadId: found.threadId, internetMessageId: found.internetMessageId, sentAt, reconcile: { foundBy: "reconcile", at: sentAt.toISOString() } });
       await afterSent(tx, fresh, sentAt);
     } else {
-      // Письмо не найдено в отправленных — только теперь разрешается повтор (OUT-06).
-      await setOutState(tx, { id: fresh.id, state: fresh.state, version: fresh.version }, "approved", { reconcile: { notFoundAt: new Date().toISOString() } });
-      await enqueue(tx, { orgId: out.organizationId, type: "outgoing.send", aggregateType: "outgoing", aggregateId: out.id, idempotencyKey: `outgoing.send:${out.id}:retry:${fresh.attempts}` });
+      // OUT-06: отсутствие письма в результатах поиска — ещё не доказательство, что оно не ушло
+      // (индексация Gmail запаздывает, поиск ограничен окном). Две сверки с интервалом,
+      // затем решение о повторе принимает человек — автоматической повторной отправки нет.
+      const prev = (fresh.reconcile as { misses?: number } | null)?.misses ?? 0;
+      const misses = prev + 1;
+      if (misses < 2) {
+        await tx.update(schema.outgoings).set({ reconcile: { misses, lastCheckAt: new Date().toISOString() }, version: fresh.version + 1 }).where(eq(schema.outgoings.id, fresh.id));
+        await enqueue(tx, { orgId: out.organizationId, type: "outgoing.reconcile", aggregateType: "outgoing", aggregateId: out.id, idempotencyKey: `outgoing.reconcile:${out.id}:miss:${misses}`, delayMs: 10 * 60_000 });
+      } else {
+        await tx.update(schema.outgoings).set({ reconcile: { misses, lastCheckAt: new Date().toISOString(), needsDecision: true }, version: fresh.version + 1 }).where(eq(schema.outgoings.id, fresh.id));
+        await tx
+          .insert(schema.tasks)
+          .values({ organizationId: out.organizationId, caseId: out.caseId, kind: "send_unknown", title: `Результат отправки неизвестен: ${out.kind === "assignment" ? "поручение" : `исх. №${out.numberDisplay}`} не найдено в отправленных после двух сверок`, detail: "Проверьте папку «Отправленные» ящика комиссии. Если письма там нет — разрешите повторную отправку в карточке дела; если есть — отметьте отправку подтверждённой.", assigneeRole: "secretary", objectType: "outgoing", objectId: out.id, dedupKey: `send_unknown:${out.id}` })
+          .onConflictDoNothing();
+      }
     }
     await audit(tx, { orgId: out.organizationId, actor: SERVICE_ACTOR, action: "outgoing.reconcile", objectType: "outgoing", objectId: out.id, caseId: out.caseId, after: { found: !!found } });
   });
   return { status: "done" as const };
+}
+
+/**
+ * OUT-06: решение по письму с неизвестным результатом после сверок.
+ * «resend» — повтор той же утверждённой версии; «confirm_sent» — письмо найдено вручную в «Отправленных».
+ */
+export async function resolveUnknownSend(user: SessionUser, input: { outgoingId: string; decision: "resend" | "confirm_sent"; basis: string; providerMessageId?: string | null }) {
+  const o0 = await db.query.outgoings.findFirst({ where: eq(schema.outgoings.id, input.outgoingId) });
+  const res = await runCommand({ name: "outgoing.resolve_unknown", user, permission: { action: "outgoing.prepare", caseId: o0?.caseId } }, async ({ tx, actor }) => {
+    const out = await tx.query.outgoings.findFirst({ where: eq(schema.outgoings.id, input.outgoingId) });
+    if (!out || out.state !== "unknown_result") throw new CommandError("Письмо не в состоянии «Результат неизвестен»");
+    if (input.basis.trim().length < 5) throw new CommandError("Укажите, что показала ручная проверка папки «Отправленные»");
+    const o = { id: out.id, state: out.state, version: out.version };
+    if (input.decision === "confirm_sent") {
+      const sentAt = new Date();
+      await setOutState(tx, o, "sent", { sentAt, providerMessageId: input.providerMessageId || out.providerMessageId, reconcile: { manual: true, by: user.fullName, basis: input.basis.trim(), at: sentAt.toISOString() } });
+      await afterSent(tx, { ...out, providerMessageId: input.providerMessageId || out.providerMessageId }, sentAt);
+    } else {
+      await setOutState(tx, o, "approved", { reconcile: { manualResend: true, by: user.fullName, basis: input.basis.trim() } });
+      await enqueue(tx, { orgId: out.organizationId, type: "outgoing.send", aggregateType: "outgoing", aggregateId: out.id, idempotencyKey: `outgoing.send:${out.id}:manual:${out.attempts}` });
+    }
+    await tx.update(schema.tasks).set({ state: "done", resolvedAt: new Date(), resolvedBy: user.id }).where(and(eq(schema.tasks.dedupKey, `send_unknown:${out.id}`), eq(schema.tasks.state, "open")));
+    await audit(tx, { orgId: out.organizationId, actor, action: `outgoing.resolve_${input.decision}`, objectType: "outgoing", objectId: out.id, caseId: out.caseId, basis: input.basis.trim() });
+    return { decision: input.decision };
+  });
+  if (res.ok && input.decision === "resend") await (await import("../handlers")).kick({ types: ["outgoing.send"], aggregateId: input.outgoingId, limit: 1 });
+  return res;
 }
 
 export function registerOutgoingHandlers() {

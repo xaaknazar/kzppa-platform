@@ -41,8 +41,14 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
   const errors: string[] = [];
   let from = `${year}-01-01`;
   let to = `${year}-12-31`;
-  if (fromRaw) validDate(fromRaw) ? (from = fromRaw) : errors.push(`Дата начала «${fromRaw}» не распознана — использовано 01.01.${year}.`);
-  if (toRaw) validDate(toRaw) ? (to = toRaw) : errors.push(`Дата окончания «${toRaw}» не распознана — использовано 31.12.${year}.`);
+  if (fromRaw) {
+    if (validDate(fromRaw)) from = fromRaw;
+    else errors.push(`Дата начала «${fromRaw}» не распознана — использовано 01.01.${year}.`);
+  }
+  if (toRaw) {
+    if (validDate(toRaw)) to = toRaw;
+    else errors.push(`Дата окончания «${toRaw}» не распознана — использовано 31.12.${year}.`);
+  }
   if (from > to) {
     errors.push("Дата начала позже даты окончания — даты поменяны местами.");
     [from, to] = [to, from];

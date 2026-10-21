@@ -56,9 +56,10 @@ export default async function RegistryPage({ searchParams }: { searchParams: Pro
         title="Реестр обращений"
         lead={`Всего ${all.length}${overdueCount ? `, с просроченным сроком рассмотрения ${overdueCount}` : ""}. Поля заполняются из подтверждённых событий дела: пустая ячейка означает, что событие ещё не произошло.`}
         actions={
-          <LinkButton href={csvHref} prefetch={false} variant="secondary">
+          // Обычная ссылка: файл отдаёт обработчик маршрута, клиентская навигация не нужна.
+          <a href={csvHref} download className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line-strong bg-surface px-4 text-[14px] font-medium text-ink transition-colors hover:bg-sunken">
             Выгрузить в CSV
-          </LinkButton>
+          </a>
         }
       />
 

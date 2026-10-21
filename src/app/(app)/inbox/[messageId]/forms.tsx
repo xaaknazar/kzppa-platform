@@ -261,7 +261,7 @@ export function RegisterCaseForm({
         <Field label="Номер письма РКА" hint="Например, 04-01/1351">
           <Input value={rkaNumber} onChange={(e) => setRkaNumber(e.target.value)} className="doc-number" autoComplete="off" disabled={pending} />
         </Field>
-        <Field label="Дата письма РКА">
+        <Field label="Дата письма РКА" hint={defaults.rkaDate ? "Найдена в тексте письма — сверьте с оригиналом." : undefined}>
           <Input type="date" value={rkaDate} onChange={(e) => setRkaDate(e.target.value)} className="tnum" disabled={pending} />
         </Field>
       </div>

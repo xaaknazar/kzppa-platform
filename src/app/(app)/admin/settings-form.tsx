@@ -117,6 +117,7 @@ export function SettingsForm({ initial, composition }: { initial: SettingsValues
   const [qComp, setQComp] = useState(initial.quorumRule.kind === "min_participants" ? String(initial.quorumRule.composition) : String(composition || ""));
   const [dKind, setDKind] = useState<DecisionKind>(initial.decisionRule.kind);
   const [source, setSource] = useState(initial.decisionRule.kind === "unknown" ? "" : initial.decisionRule.source);
+  const [casting, setCasting] = useState(initial.decisionRule.kind === "for_more_than_half_of_participants" ? !!initial.decisionRule.chairCastingVote : false);
   const [error, setError] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ warnings: string[] } | null>(null);
@@ -148,7 +149,7 @@ export function SettingsForm({ initial, composition }: { initial: SettingsValues
     setSourceError(null);
     setSaved(null);
     if (dKind !== "unknown" && source.trim().length < 5) {
-      setSourceError("Укажите пункт и редакцию Положения, например «п. 4.7 Положения о Комиссии, ред. от 12.03.2025».");
+      setSourceError("Укажите пункт и редакцию Положения, например «п. 20 Положения о Комиссии, утв. 19.02.2022».");
       return;
     }
     if (qKind === "min_participants" && (!Number.isInteger(minNum) || !Number.isInteger(compNum) || minNum < 1 || compNum < 1)) {
@@ -156,7 +157,8 @@ export function SettingsForm({ initial, composition }: { initial: SettingsValues
       return;
     }
     const quorumRule: QuorumRule = qKind === "min_participants" ? { kind: "min_participants", min: minNum, composition: compNum } : { kind: "more_than_half_of_composition" };
-    const decisionRule: DecisionRule = dKind === "unknown" ? { kind: "unknown" } : { kind: dKind, source: source.trim() };
+    const decisionRule: DecisionRule =
+      dKind === "unknown" ? { kind: "unknown" } : dKind === "for_more_than_half_of_participants" ? { kind: dKind, source: source.trim(), chairCastingVote: casting } : { kind: dKind, source: source.trim() };
     start(async () => {
       const r = await saveOrgSettingsAction({ ...v, quorumRule, decisionRule });
       if (r.ok) {
@@ -290,10 +292,26 @@ export function SettingsForm({ initial, composition }: { initial: SettingsValues
               </Select>
             </Field>
             <Field label="Пункт и редакция Положения" error={sourceError} hint={dKind === "unknown" ? "Заполняется вместе с правилом" : "Обязательно. Попадает в каждый протокол"}>
-              <Input value={source} disabled={dKind === "unknown"} onChange={(e) => setSource(e.target.value)} placeholder="п. 4.7, ред. от 12.03.2025" aria-required={dKind !== "unknown"} />
+              <Input value={source} disabled={dKind === "unknown"} onChange={(e) => setSource(e.target.value)} placeholder="п. 20 Положения, утв. 19.02.2022" aria-required={dKind !== "unknown"} />
             </Field>
           </div>
+          {dKind === "for_more_than_half_of_participants" && (
+            <label className="flex items-start gap-2 text-[13.5px] text-ink-2">
+              <input type="checkbox" className="mt-1" checked={casting} onChange={(e) => setCasting(e.target.checked)} />
+              <span>
+                При равенстве голосов «за» и «против» решающий голос председателя
+                <span className="block text-[12.5px] text-ink-3">Если председатель воздержался или не голосовал, при равенстве решение не принято.</span>
+              </span>
+            </label>
+          )}
           {dKind === "unknown" && <p className="text-[13px] text-ink-3">Пока правило не зафиксировано, протокол покажет «Решение не определено» даже при достигнутом кворуме.</p>}
+          <details className="rounded-md bg-sunken px-3 py-2 text-[13px] text-ink-2">
+            <summary className="cursor-pointer text-ink">Текст п. 20 действующего Положения</summary>
+            <p className="mt-2">
+              «Заседание Комиссии считается правомочным при участии не менее половины членов Комиссии. Решения Комиссии принимаются большинством голосов присутствующих на заседании членов Комиссии. В случае равного распределения голосов членов Комиссии голос Председателя Комиссии является решающим.»
+            </p>
+            <p className="mt-1 text-ink-3">Положение о Комиссии по защите профессиональных прав адвокатов РКА, утверждено Республиканской конференцией коллегий адвокатов 19.02.2022.</p>
+          </details>
         </div>
       </fieldset>
 

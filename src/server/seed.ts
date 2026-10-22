@@ -147,7 +147,7 @@ interface Ctx {
   deadline: number;
 }
 
-async function createOrg(demo: boolean) {
+async function createOrg(_demo: boolean) {
   let org = await db.query.organizations.findFirst();
   if (!org) {
     [org] = await db
@@ -161,8 +161,9 @@ async function createOrg(demo: boolean) {
         rkaAddressee: "Председателю Республиканской коллегии адвокатов",
         outgoingPrefix: null,
         quorumRule: { kind: "min_participants", min: 16, composition: 30 },
-        // DEC-02: правило решения переносится из действующего Положения. В демо — явная пометка.
-        decisionRule: demo ? { kind: "for_more_than_half_of_participants", source: "ДЕМО: заменить формулой и пунктом действующего Положения" } : { kind: "unknown" },
+        // DEC-02: правило решения — из действующего Положения (п. 20): большинство голосов присутствующих,
+        // при равенстве голосов решающий голос председателя.
+        decisionRule: { kind: "for_more_than_half_of_participants", source: "п. 20 Положения о Комиссии по защите профессиональных прав адвокатов РКА (утв. Республиканской конференцией коллегий адвокатов 19.02.2022)", chairCastingVote: true },
         policies: {},
       })
       .returning();
@@ -542,7 +543,7 @@ export async function runSeed(opts: { demo: boolean; adminEmail?: string | null;
   const org = await createOrg(opts.demo);
   const adminEmail = (opts.adminEmail ?? "").trim().toLowerCase();
   if (adminEmail) {
-    await addUser(org.id, { fullName: "Администратор платформы", firstName: "Администратор", email: adminEmail, roles: opts.demo ? ["tech_admin"] : ["tech_admin", "chair", "secretary"] });
+    await addUser(org.id, { fullName: "Администратор платформы", firstName: "Администратор", email: adminEmail, roles: ["tech_admin"] }); // председатель и секретарь назначаются при вводе состава
     log(`Администратор ${adminEmail} добавлен`);
   }
   if (!opts.demo) return { logs, complete: true, done: [], next: null };

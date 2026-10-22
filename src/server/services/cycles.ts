@@ -152,6 +152,7 @@ export async function closeVoting(user: SessionUser, input: { cycleId: string; e
       votes: votes.map((v) => ({ memberId: v.memberId, choice: v.choice as VoteChoice, comment: v.comment })),
       quorumRule: cycle.quorumRule as QuorumRule,
       decisionRule: cycle.decisionRule as DecisionRule,
+      chairMemberId: kase.chairId,
     });
     const name = new Map(snap.map((s) => [s.userId, s.fullName]));
     const org = await tx.query.organizations.findFirst({ where: eq(schema.organizations.id, orgId) });

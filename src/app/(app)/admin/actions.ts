@@ -60,3 +60,41 @@ export async function syncMailAccountAction(accountId: string): Promise<AdminRes
   revalidatePath("/", "layout");
   return { ok: true };
 }
+
+export async function importMembersAction(input: Parameters<typeof admin.importMembers>[1]) {
+  const u = await requireUser();
+  if (!can(u.principal, "admin.members")) return { ok: false as const, error: "Недостаточно полномочий" };
+  const results = await admin.importMembers(u, input);
+  revalidatePath("/admin/members");
+  return { ok: true as const, data: results };
+}
+
+/** Проверочное письмо с ящика комиссии самому администратору (служебное, не попадает в разбор почты). */
+export async function sendTestMailAction(): Promise<AdminResult<{ to: string }>> {
+  const u = await requireUser();
+  if (!can(u.principal, "admin.settings")) return { ok: false, error: "Недостаточно полномочий" };
+  const { getMailAdapter, getPrimaryAccount } = await import("@/integrations/mail");
+  const { db, schema } = await import("@/db/client");
+  const { eq } = await import("drizzle-orm");
+  const adapter = getMailAdapter();
+  if (adapter.mode !== "gmail") return { ok: false, error: "Включён тестовый транспорт (MAIL_TRANSPORT=dry-run): письма наружу не уходят." };
+  const account = await getPrimaryAccount(u.orgId);
+  if (!account) return { ok: false, error: "Почтовый ящик комиссии не подключён" };
+  const org = await db.query.organizations.findFirst({ where: eq(schema.organizations.id, u.orgId) });
+  try {
+    await adapter.sendApprovedPackage(account.id, {
+      from: org!.officialSender,
+      to: [u.email],
+      cc: [],
+      bcc: [],
+      subject: "Проверка подключения почты КЗППА",
+      text: `Это проверочное письмо платформы ${org!.shortName}. Отправка с ${org!.officialSender} работает.`,
+      html: null,
+      attachments: [],
+      outgoingId: `svc-test-${crypto.randomUUID()}`,
+    });
+    return { ok: true, data: { to: u.email } };
+  } catch (e) {
+    return { ok: false, error: `Отправка не удалась: ${(e as Error).message}` };
+  }
+}

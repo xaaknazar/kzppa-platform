@@ -272,3 +272,31 @@ export async function recordMailSyncRequest(user: SessionUser, accountId: string
     return { id: acc.id, email: acc.email };
   });
 }
+
+/**
+ * Массовый ввод состава (FLOW-01, DATA-02). Каждая строка — отдельная команда upsertMember
+ * со своей записью в журнале; существующий участник находится по адресу и обновляется.
+ * Роли из таблицы добавляются к уже имеющимся, не отнимаются.
+ */
+export async function importMembers(user: SessionUser, input: { rows: { fullName: string; firstName: string; patronymic: string | null; email: string; collegium: string | null; roles: OrgRole[] }[]; emailsConfirmed: boolean }) {
+  const results: { email: string; ok: boolean; error?: string; created?: boolean }[] = [];
+  for (const r of input.rows) {
+    const existing = await db.query.users.findFirst({ where: and(eq(schema.users.organizationId, user.orgId), eq(sql`lower(${schema.users.email})`, r.email.toLowerCase())) });
+    const currentRoles = existing ? (await db.select({ role: schema.orgRoles.role }).from(schema.orgRoles).where(eq(schema.orgRoles.userId, existing.id))).map((x) => x.role as OrgRole) : [];
+    const res = await upsertMember(user, {
+      id: existing?.id,
+      fullName: r.fullName,
+      firstName: r.firstName,
+      patronymic: r.patronymic,
+      addressKk: existing?.addressKk ?? r.firstName,
+      email: r.email,
+      emailVerified: input.emailsConfirmed || !!existing?.emailVerified,
+      confirmVerifiedEmail: input.emailsConfirmed,
+      collegium: r.collegium ?? existing?.collegium ?? null,
+      roles: [...new Set([...currentRoles, ...r.roles])],
+      status: "active",
+    });
+    results.push(res.ok ? { email: r.email, ok: true, created: !existing } : { email: r.email, ok: false, error: res.error });
+  }
+  return results;
+}

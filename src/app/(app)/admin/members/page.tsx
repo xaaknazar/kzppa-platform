@@ -69,9 +69,14 @@ export default async function MembersPage({ searchParams }: { searchParams: Prom
           <p className="mt-0.5 text-[13px] text-ink-3">{quorumText}.</p>
         </div>
         {canEdit && edit !== "new" && (
-          <LinkButton href={withEdit("new")} variant="primary" scroll={false}>
-            Добавить участника
-          </LinkButton>
+          <div className="flex flex-wrap gap-2">
+            <LinkButton href="/admin/members/import" variant="secondary">
+              Загрузить из таблицы
+            </LinkButton>
+            <LinkButton href={withEdit("new")} variant="primary" scroll={false}>
+              Добавить участника
+            </LinkButton>
+          </div>
         )}
       </div>
 

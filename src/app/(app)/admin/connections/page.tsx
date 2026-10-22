@@ -1,10 +1,12 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, count, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { requireUser } from "@/server/auth";
-import { integrationModes } from "@/server/env";
+import { env, integrationModes } from "@/server/env";
+import { GoLiveChecklist } from "./go-live";
+
 import { Badge, Empty, KV, LinkButton, Notice, Section, fmtDate, type Tone } from "@/components/ui";
 import type { ConnectionState } from "@/domain/types";
-import { syncMailAccountAction } from "../actions";
+import { sendTestMailAction, syncMailAccountAction } from "../actions";
 import { ActionButton } from "../settings-form";
 
 export const metadata = { title: "Подключения" };
@@ -38,6 +40,12 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
   ]);
   const modes = integrationModes();
   const now = Date.now();
+  const appUrl = env.appUrl;
+  const [{ n: composition }] = await db
+    .select({ n: count() })
+    .from(schema.orgRoles)
+    .innerJoin(schema.users, eq(schema.users.id, schema.orgRoles.userId))
+    .where(and(eq(schema.orgRoles.organizationId, u.orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active")));
 
   return (
     <div className="space-y-6">
@@ -46,6 +54,24 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
         <Notice tone="bad" title="Подключение не выполнено">
           {ERRORS[error] ?? `Google вернул ошибку: ${error.slice(0, 200)}. Повторите подключение; если ошибка повторяется, сообщите техническому администратору.`}
         </Notice>
+      )}
+
+      <GoLiveChecklist
+        items={[
+          { done: modes.auth !== "demo", title: "Боевой вход", note: modes.auth === "demo" ? "Сейчас AUTH_MODE=demo: войти может любой, выбрав участника. Для боевой работы — AUTH_MODE=email." : "Вход по коду с почты комиссии." },
+          { done: composition >= 2, title: "Состав комиссии внесён", note: `Действующих участников: ${composition}. Загрузка из таблицы — в разделе «Состав комиссии».` },
+          { done: modes.mail === "gmail", title: "Боевая почта", note: modes.mail === "gmail" ? "MAIL_TRANSPORT=gmail" : "Сейчас MAIL_TRANSPORT=dry-run: письма наружу не уходят." },
+          { done: accounts.some((a) => ["connected", "up_to_date", "syncing", "delayed"].includes(a.state)), title: `Ящик ${org?.officialSender ?? "комиссии"} подключён`, note: "Кнопка «Подключить Gmail» ниже; входить в Google нужно именно под этим ящиком." },
+          { done: modes.sign === "sigex", title: "Боевая подпись", note: modes.sign === "sigex" ? "SIGN_PROVIDER=sigex" : "Сейчас SIGN_PROVIDER=dry-run: подписи тестовые." },
+        ]}
+        redirectUri={`${appUrl}/api/integrations/gmail/callback`}
+      />
+
+      {modes.mail === "gmail" && accounts.length > 0 && (
+        <Section title="Проверка отправки">
+          <p className="mb-3 text-[13.5px] text-ink-3">Платформа отправит с ящика комиссии короткое письмо на ваш адрес {u.email}. Служебные письма не попадают в разбор почты.</p>
+          <ActionButton action={sendTestMailAction} label="Отправить проверочное письмо" pendingLabel="Отправляем…" successLabel="Отправлено — проверьте почту" />
+        </Section>
       )}
 
       <Section title="Почтовые ящики" aside={<LinkButton href="/api/integrations/gmail/connect" variant="primary" size="sm" prefetch={false}>Подключить Gmail</LinkButton>}>
@@ -133,10 +159,10 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
           />
           <ModeRow
             name="Вход пользователей"
-            live={modes.auth === "supabase"}
+            live={modes.auth !== "demo"}
             liveLabel="По коду на почту"
             testLabel="Демонстрационный"
-            liveText="Вход по одноразовому коду на подтверждённый адрес участника."
+            liveText={modes.auth === "email" ? "Вход по одноразовому коду, который платформа отправляет с почты комиссии на подтверждённый адрес участника." : "Вход по одноразовому коду Supabase Auth на подтверждённый адрес участника."}
             testText="Вход выбором участника из списка, без проверки почты. Только для демонстрации."
           />
           <ModeRow

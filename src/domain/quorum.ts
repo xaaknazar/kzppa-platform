@@ -16,10 +16,14 @@ export type QuorumRule =
   /** Более половины состава: floor(N/2) + 1. Для N = 30 даёт 16. */
   | { kind: "more_than_half_of_composition" };
 
+/**
+ * Правило решения. chairCastingVote — «в случае равного распределения голосов голос Председателя
+ * является решающим» (п. 20 Положения о Комиссии, утв. 19.02.2022).
+ */
 export type DecisionRule =
   | { kind: "unknown" }
   /** «За» больше половины участвовавших. */
-  | { kind: "for_more_than_half_of_participants"; source: string }
+  | { kind: "for_more_than_half_of_participants"; source: string; chairCastingVote?: boolean }
   /** «За» больше, чем «Против» (воздержавшиеся не влияют). */
   | { kind: "for_more_than_against"; source: string }
   /** «За» больше половины состава. */
@@ -39,6 +43,8 @@ export interface TallyInput {
   votes: VoteRecord[];
   quorumRule: QuorumRule;
   decisionRule: DecisionRule;
+  /** Председатель Комиссии — для правила решающего голоса. */
+  chairMemberId?: string | null;
 }
 
 export type DecisionOutcome = "accepted" | "rejected" | "no_quorum" | "undetermined";
@@ -60,6 +66,8 @@ export interface Tally {
   decisionRuleText: string;
   arithmeticOk: boolean;
   errors: string[];
+  /** Решение определено решающим голосом председателя при равенстве голосов. */
+  castingVoteApplied: boolean;
 }
 
 export function quorumRequired(rule: QuorumRule, composition: number): number {
@@ -88,7 +96,7 @@ export function describeDecision(rule: DecisionRule): string {
     case "unknown":
       return "Правило определения решения не зафиксировано по Положению";
     case "for_more_than_half_of_participants":
-      return `«За» более половины участвовавших (${rule.source})`;
+      return `«За» более половины участвовавших${rule.chairCastingVote ? "; при равенстве голосов голос Председателя решающий" : ""} (${rule.source})`;
     case "for_more_than_against":
       return `«За» больше, чем «Против» (${rule.source})`;
     case "for_more_than_half_of_composition":
@@ -154,6 +162,7 @@ export function tally(input: TallyInput): Tally {
   const quorumReached = participated >= qReq;
 
   let outcome: DecisionOutcome;
+  let castingVoteApplied = false;
   if (!arithmeticOk || !Number.isFinite(qReq)) outcome = "undetermined";
   else if (!quorumReached) outcome = "no_quorum";
   else {
@@ -161,9 +170,26 @@ export function tally(input: TallyInput): Tally {
       case "unknown":
         outcome = "undetermined";
         break;
-      case "for_more_than_half_of_participants":
-        outcome = f > participated / 2 ? "accepted" : "rejected";
+      case "for_more_than_half_of_participants": {
+        const r = input.decisionRule;
+        if (f > participated / 2) outcome = "accepted";
+        else if (r.chairCastingVote && f === a && f > 0) {
+          // «Равное распределение голосов» понимается как равенство «за» и «против» (воздержавшиеся
+          // не распределяются). Решает голос председателя, если он голосовал «за» или «против».
+          const chairVote = input.chairMemberId ? byMember.get(input.chairMemberId)?.choice : undefined;
+          if (chairVote === "for") {
+            outcome = "accepted";
+            castingVoteApplied = true;
+          } else if (chairVote === "against") {
+            outcome = "rejected";
+            castingVoteApplied = true;
+          } else {
+            outcome = "rejected";
+            errors.push("Голоса разделились поровну, председатель не голосовал «за» или «против» — решение не принято");
+          }
+        } else outcome = "rejected";
         break;
+      }
       case "for_more_than_against":
         outcome = f > a ? "accepted" : "rejected";
         break;
@@ -189,6 +215,7 @@ export function tally(input: TallyInput): Tally {
     decisionRuleText: describeDecision(input.decisionRule),
     arithmeticOk,
     errors,
+    castingVoteApplied,
   };
 }
 

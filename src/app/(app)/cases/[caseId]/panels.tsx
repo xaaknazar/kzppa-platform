@@ -57,6 +57,18 @@ function Err({ error }: { error: string | null }) {
   ) : null;
 }
 
+/** П. 27 Положения: заключение — не позднее 15 рабочих дней (праздники не учитываются). */
+function addWorkingDays(n: number) {
+  const d = new Date();
+  let left = n;
+  while (left > 0) {
+    d.setDate(d.getDate() + 1);
+    const wd = d.getDay();
+    if (wd !== 0 && wd !== 6) left--;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 function addDays(n: number) {
   const d = new Date(Date.now() + n * 86400_000);
   return d.toISOString().slice(0, 10);
@@ -68,7 +80,7 @@ export function AssignForm({ caseId, lang, blocked, members }: { caseId: string;
   const { pending, error, run } = useAction();
   const key = useKey();
   const [executorId, setExecutor] = useState("");
-  const [deadline, setDeadline] = useState(addDays(14));
+  const [deadline, setDeadline] = useState(addWorkingDays(15));
   const [task, setTask] = useState("изучить материалы обращения и подготовить проект заключения Комиссии");
   const [l, setL] = useState<"ru" | "kk" | "">(lang ?? "");
   const sel = members.find((m) => m.id === executorId);
@@ -90,7 +102,7 @@ export function AssignForm({ caseId, lang, blocked, members }: { caseId: string;
             ))}
           </Select>
         </Field>
-        <Field label="Срок">
+        <Field label="Срок" hint="По умолчанию 15 рабочих дней (п. 27 Положения)">
           <Input type="date" value={deadline} min={addDays(0)} onChange={(e) => setDeadline(e.target.value)} disabled={blocked} />
         </Field>
         <Field label="Язык поручения" hint={lang ? "По языку исходного обращения" : "Язык обращения не определён автоматически"}>

@@ -193,3 +193,44 @@ describe("ACL (AT-07, AT-09)", () => {
     expect(d.violations.join()).toMatch(/Публичный/);
   });
 });
+
+describe("DEC-02: п. 20 Положения — большинство присутствующих, решающий голос председателя", () => {
+  const m = Array.from({ length: 30 }, (_, i) => `m${i + 1}`);
+  const rule = { kind: "for_more_than_half_of_participants" as const, source: "п. 20 Положения", chairCastingVote: true };
+  const Q = { kind: "min_participants" as const, min: 16, composition: 30 };
+  const votes = (forN: number, againstN: number, abstainN: number, chairChoice?: "for" | "against") => {
+    const list: { memberId: string; choice: "for" | "against" | "abstain" }[] = [];
+    let i = 1; // m1 — председатель
+    if (chairChoice) list.push({ memberId: "m1", choice: chairChoice });
+    const push = (n: number, c: "for" | "against" | "abstain") => { for (let k = 0; k < n; k++) list.push({ memberId: m[i++], choice: c }); };
+    push(forN - (chairChoice === "for" ? 1 : 0), "for");
+    push(againstN - (chairChoice === "against" ? 1 : 0), "against");
+    push(abstainN, "abstain");
+    return list;
+  };
+  it("9 за / 9 против, председатель «за» → принято решающим голосом", () => {
+    const t = tally({ eligibleMemberIds: m, votes: votes(9, 9, 0, "for"), quorumRule: Q, decisionRule: rule, chairMemberId: "m1" });
+    expect(t).toMatchObject({ outcome: "accepted", castingVoteApplied: true });
+  });
+  it("9 за / 9 против, председатель «против» → не принято", () => {
+    expect(tally({ eligibleMemberIds: m, votes: votes(9, 9, 0, "against"), quorumRule: Q, decisionRule: rule, chairMemberId: "m1" }).outcome).toBe("rejected");
+  });
+  it("без правила решающего голоса равенство не даёт решения", () => {
+    expect(tally({ eligibleMemberIds: m, votes: votes(9, 9, 0, "for"), quorumRule: Q, decisionRule: { ...rule, chairCastingVote: false }, chairMemberId: "m1" }).outcome).toBe("rejected");
+  });
+  it("большинство присутствующих: 12 за из 22 → принято; 11 за из 22 при 11 воздерж. → не принято", () => {
+    expect(tally({ eligibleMemberIds: m, votes: votes(12, 5, 5), quorumRule: Q, decisionRule: rule, chairMemberId: "m1" }).outcome).toBe("accepted");
+    expect(tally({ eligibleMemberIds: m, votes: votes(11, 0, 11), quorumRule: Q, decisionRule: rule, chairMemberId: "m1" }).outcome).toBe("rejected");
+  });
+});
+
+import { parseRoster } from "@/domain/roster-import";
+describe("Импорт состава", () => {
+  it("таблица из Excel: заголовок, табуляция, роли, повтор адреса", () => {
+    const rows = parseRoster("ФИО\tПочта\tКоллегия\tРоль\nТулегенов Артур Куанышевич\tA.Tulegenov@mail.kz\tМангистауская ОКА\tпредседатель\nШерубаев Руслан Айтказыевич\tsher@mail.kz\tВКО ОКА\tсекретарь\nИванов Иван\tsher@mail.kz\t\t");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ fullName: "Тулегенов Артур Куанышевич", firstName: "Артур", patronymic: "Куанышевич", email: "a.tulegenov@mail.kz", roles: ["member", "chair"] });
+    expect(rows[1].roles).toContain("secretary");
+    expect(rows[2].errors.join()).toMatch(/повторяется/);
+  });
+});

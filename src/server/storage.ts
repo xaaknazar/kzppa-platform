@@ -126,8 +126,9 @@ export async function putImmutable(
   return { id: row.id, sha256: sha, size: row.size, mimeType: row.mimeType };
 }
 
-export async function readBlob(blobId: string): Promise<{ bytes: Uint8Array; mimeType: string | null; sha256: string }> {
-  const row = await db.query.blobs.findFirst({ where: eq(schema.blobs.id, blobId) });
+/** tx — если вызывается внутри транзакции: чтение через то же соединение (иначе взаимоблокировка пула). */
+export async function readBlob(blobId: string, tx?: Tx): Promise<{ bytes: Uint8Array; mimeType: string | null; sha256: string }> {
+  const row = await (tx ?? db).query.blobs.findFirst({ where: eq(schema.blobs.id, blobId) });
   if (!row) throw new Error("Объект не найден");
   const bytes = await backend().get(row.storageKey);
   return { bytes, mimeType: row.mimeType, sha256: row.sha256 };

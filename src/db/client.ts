@@ -24,7 +24,9 @@ function connectionString() {
 export const sqlClient =
   globalForDb.__kzppaSql ??
   postgres(connectionString(), {
-    max: process.env.VERCEL ? 1 : 10,
+    // Не 1: экземпляр функции обслуживает параллельные запросы (fluid compute), а часть кода
+    // читает через общий пул внутри открытой транзакции — с одним соединением это взаимоблокировка.
+    max: Number(process.env.DB_POOL_MAX) || (process.env.VERCEL ? 5 : 10),
     prepare: false, // совместимо с пулером Supabase (transaction mode)
     idle_timeout: 20,
   });

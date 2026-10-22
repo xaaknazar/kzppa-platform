@@ -290,7 +290,7 @@ export async function prepareSignablePdf(user: SessionUser, input: { cycleId: st
     const manifestHash = await qrManifestHash(manifest);
     const token = (await sha256Hex(`${ver.id}:${crypto.randomUUID()}`)).slice(0, 32);
     const qrUrl = verificationUrl(token, manifestHash);
-    const src = await readBlob(source.blobId);
+    const src = await readBlob(source.blobId, tx);
     const built = await buildFinalConclusionPdf({ source: { bytes: src.bytes, format: fmt as "pdf" | "docx", filename: source.filename ?? "conclusion" }, qrUrl, lang: ((kase.conclusionLang ?? kase.lang) as "ru" | "kk") ?? "ru" });
     if (!built.textCheck.ok) throw new CommandError(`Проверка PDF не пройдена: ${built.textCheck.issues.join("; ")}`);
     const blob = await putImmutable(orgId, built.bytes, "application/pdf", undefined, tx);

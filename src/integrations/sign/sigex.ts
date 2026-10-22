@@ -255,7 +255,10 @@ export class SigexAdapter implements SignAdapter {
     const signUrl = r.signURL ?? r.signURLAuto;
     if (!dataUrl || !signUrl) throw new SigexError("SIGEX не вернул ссылки dataURL/signURL", 200, null, false);
     // Nonce входа: подпишется в той же процедуре. Неудача не мешает подписанию заключения.
-    const authNonce = await this.requestNonce().catch(() => null);
+    // SIGEX_COMBINED_AUTH=0 — аварийный выключатель: если eGov не примет пакет «заключение + вход»,
+    // подписывается только заключение, а вход в SIGEX подтверждается отдельным QR.
+    const combined = process.env.SIGEX_COMBINED_AUTH !== "0";
+    const authNonce = combined ? await this.requestNonce().catch(() => null) : null;
     return { ...procedureFrom(r, dataUrl, signUrl), authNonce };
   }
 

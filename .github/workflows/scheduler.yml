@@ -1,10 +1,12 @@
-# Частый планировщик фоновых операций платформы (ARCH-03, MAIL-03).
-# На тарифе Vercel Hobby cron-задачи разрешены лишь раз в сутки, поэтому частые запуски
-# выполняет GitHub Actions. Нужен секрет репозитория CRON_SECRET (то же значение, что в Vercel).
+# Резервный планировщик фоновых операций (ARCH-03, MAIL-03).
+# Основной частый запуск — внешний cron (например, cron-job.org) каждые 1–5 минут:
+#   GET https://kzppa-platform.vercel.app/api/cron/mail-sync   и   /api/cron/outbox
+#   заголовок Authorization: Bearer <CRON_SECRET>
+# Этот workflow — страховка раз в час. Нужен секрет репозитория CRON_SECRET.
 name: scheduler
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch: {}
 concurrency:
   group: scheduler
@@ -14,11 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Синхронизация почты комиссии
+      - name: Синхронизация почты и фоновые операции
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ vars.APP_URL || 'https://kzppa-platform.vercel.app' }}
         run: |
-          curl -fsS --max-time 70 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ vars.APP_URL || 'https://kzppa-platform.vercel.app' }}/api/cron/mail-sync" -o /dev/null -w "mail-sync %{http_code}\n" || true
-      - name: Фоновые операции (повторы, сверка, подпись)
-        run: |
-          curl -fsS --max-time 70 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ vars.APP_URL || 'https://kzppa-platform.vercel.app' }}/api/cron/outbox" -o /dev/null -w "outbox %{http_code}\n" || true
+          if [ -z "$CRON_SECRET" ]; then echo "::error::Не задан секрет CRON_SECRET"; exit 1; fi
+          for path in api/cron/mail-sync api/cron/outbox; do
+            code=$(curl -sS --max-time 70 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/$path")
+            echo "$path → $code"
+            if [ "$code" = "401" ]; then echo "::error::Ключ CRON_SECRET не совпадает с Vercel"; exit 1; fi
+          done

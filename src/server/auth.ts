@@ -6,12 +6,14 @@ import { createServerClient } from "@supabase/ssr";
 import { db, schema } from "@/db/client";
 import type { Principal } from "@/domain/acl";
 import type { CaseRole, OrgRole } from "@/domain/types";
-import { env, isDemoAuth } from "./env";
+import { env } from "./env";
 
 /**
- * SEC-02. Вход: Supabase Auth (одноразовый код на подтверждённый адрес) либо
- * демо-сессия для тестовых сред. Сопоставление почтового адреса с человеком
- * выполняется отдельно от проверки полномочий (DATA-02): адрес должен быть в составе.
+ * SEC-02. Вход:
+ *  - email: одноразовый код, который платформа отправляет с почты комиссии на подтверждённый адрес;
+ *  - supabase: код от Supabase Auth;
+ *  - demo: выбор участника, только для тестовых сред.
+ * Сопоставление адреса с человеком отделено от проверки полномочий (DATA-02): адрес должен быть в составе.
  */
 
 export interface SessionUser {
@@ -23,7 +25,26 @@ export interface SessionUser {
   principal: Principal;
 }
 
-export const DEMO_COOKIE = "kzppa_demo_session";
+export const SESSION_COOKIE = "kzppa_session";
+/** @deprecated прежнее имя */
+export const DEMO_COOKIE = SESSION_COOKIE;
+const SESSION_HOURS = 12;
+
+/** Создать сессию и установить cookie (серверное действие или обработчик маршрута). */
+export async function createSession(userId: string) {
+  const id = crypto.randomUUID() + crypto.randomUUID();
+  await db.insert(schema.sessions).values({ id, userId, expiresAt: new Date(Date.now() + SESSION_HOURS * 3600_000) });
+  const store = await cookies();
+  store.set(SESSION_COOKIE, id, { httpOnly: true, sameSite: "lax", secure: env.appUrl.startsWith("https"), path: "/", maxAge: SESSION_HOURS * 3600 });
+  return id;
+}
+
+export async function destroySession() {
+  const store = await cookies();
+  const sid = store.get(SESSION_COOKIE)?.value;
+  if (sid) await db.delete(schema.sessions).where(eq(schema.sessions.id, sid));
+  store.delete(SESSION_COOKIE);
+}
 
 export async function supabaseServer() {
   const store = await cookies();
@@ -75,12 +96,15 @@ export async function loadUserById(userId: string): Promise<SessionUser | null> 
 }
 
 export async function getSessionUser(): Promise<SessionUser | null> {
-  if (isDemoAuth()) {
+  // Сессия платформы: демо, вход по коду с почты комиссии, вход администратора по ключу.
+  {
     const store = await cookies();
-    const sid = store.get(DEMO_COOKIE)?.value;
-    if (!sid) return null;
-    const s = await db.query.sessions.findFirst({ where: and(eq(schema.sessions.id, sid), gt(schema.sessions.expiresAt, new Date())) });
-    return s ? loadUserById(s.userId) : null;
+    const sid = store.get(SESSION_COOKIE)?.value;
+    if (sid) {
+      const s = await db.query.sessions.findFirst({ where: and(eq(schema.sessions.id, sid), gt(schema.sessions.expiresAt, new Date())) });
+      if (s) return loadUserById(s.userId);
+    }
+    if (env.authMode !== "supabase") return null;
   }
   const supa = await supabaseServer();
   const { data } = await supa.auth.getUser();

@@ -616,7 +616,23 @@ export const templates = pgTable(
   (t) => [uniqueIndex("templates_kind_lang_ver").on(t.organizationId, t.kind, t.lang, t.version)],
 );
 
-/* Сессии входа в демо/без Supabase Auth */
+/* SEC-02: одноразовые коды входа, отправляемые с почты комиссии. Хранится только хеш кода. */
+export const loginCodes = pgTable(
+  "login_codes",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    usedAt: ts("used_at"),
+    sendState: text("send_state").notNull().default("pending"),
+    createdAt: created(),
+  },
+  (t) => [index("login_codes_user").on(t.userId, t.createdAt)],
+);
+
+/* Сессии входа (демо, вход по коду с почты комиссии, вход администратора по ключу) */
 export const sessions = pgTable("sessions", {
   id: text("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id),

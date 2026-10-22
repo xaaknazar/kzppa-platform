@@ -1,7 +1,7 @@
 /**
  * Начальное заполнение базы из командной строки:
  *   SEED_ADMIN_EMAIL=you@example.kz npm run seed
- *   DEMO_SEED=1 npm run seed   — плюс демонстрационные данные
+ *   DEMO_SEED=1 npm run seed            — плюс демонстрационные данные
  */
 process.env.MAIL_TRANSPORT ??= "dry-run";
 process.env.SIGN_PROVIDER ??= "dry-run";

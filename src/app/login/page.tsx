@@ -5,6 +5,8 @@ import { Emblem } from "@/components/shell";
 import { getSessionUser, ROLE_LABEL } from "@/server/auth";
 import { env, isDemoAuth } from "@/server/env";
 import { OtpLogin } from "./otp-login";
+import { seedProgress } from "@/server/seed";
+import { EmailLogin } from "./email-login";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Вход" };
@@ -13,8 +15,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   if (await getSessionUser()) redirect("/");
   const [{ n: orgCount }] = await db.select({ n: count() }).from(schema.organizations);
   if (orgCount === 0) redirect("/setup");
+  if (isDemoAuth() && !(await seedProgress()).demoComplete) redirect("/setup");
   const { error } = await searchParams;
   const demo = isDemoAuth();
+  const sender = (await db.query.organizations.findFirst())?.officialSender ?? "почты комиссии";
   const people = demo
     ? await db
         .select({ id: schema.users.id, fullName: schema.users.fullName, role: schema.orgRoles.role })
@@ -62,8 +66,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
                 )}
               </form>
             </>
-          ) : (
+          ) : env.authMode === "supabase" ? (
             <OtpLogin supabaseUrl={env.supabaseUrl} anonKey={env.supabaseAnonKey} />
+          ) : (
+            <EmailLogin sender={sender} />
           )}
         </div>
         <p className="mt-6 text-[12.5px] text-ink-3">Вход доступен только участникам с подтверждённым адресом в составе комиссии. Ссылка на дело без входа не открывает материалы.</p>

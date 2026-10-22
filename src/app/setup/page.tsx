@@ -1,83 +1,146 @@
 import { redirect } from "next/navigation";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { Emblem } from "@/components/shell";
 import { env, isDemoAuth } from "@/server/env";
 import { safeEqual } from "@/server/crypto";
+import { createSession } from "@/server/auth";
 import { Button, Field, Input, Notice } from "@/components/ui";
+import { DEMO_STAGES, seedProgress } from "@/server/seed";
+import { AutoContinue } from "./auto-continue";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 export const metadata = { title: "Первичная настройка" };
 
 /**
- * Первичная настройка пустой базы. В демо-режиме — с демонстрационными данными;
- * в боевом — только организация и администратор, по секрету развёртывания.
- * Когда база заполнена, страница недоступна.
+ * Первичная настройка.
+ *  - Демо: заполнение порциями (функция на Vercel ограничена 60 с) с продолжением с места остановки; сброс по ключу.
+ *  - Боевой режим: организация и технический администратор по ключу развёртывания; администратор сразу входит.
+ * Когда настройка завершена, страница уводит на вход.
  */
-async function state() {
-  const [{ n: orgs }] = await db.select({ n: count() }).from(schema.organizations);
-  const [{ n: cases }] = await db.select({ n: count() }).from(schema.cases);
-  return { orgs, cases };
+
+async function hasAdmin() {
+  const [{ n }] = await db.select({ n: count() }).from(schema.orgRoles).where(eq(schema.orgRoles.role, "tech_admin"));
+  return n > 0;
 }
 
-async function setup(form: FormData) {
+function keyOk(form: FormData) {
+  const key = String(form.get("key") ?? "");
+  return !!env.cronSecret && safeEqual(key, env.cronSecret);
+}
+
+async function continueDemo() {
   "use server";
-  const s = await state();
-  const demo = isDemoAuth() && form.get("demo") === "1";
-  if (!isDemoAuth()) {
-    const key = String(form.get("key") ?? "");
-    if (!env.cronSecret || !safeEqual(key, env.cronSecret)) redirect("/setup?error=Неверный ключ развёртывания");
-  }
-  if (s.orgs > 0 && !(demo && s.cases === 0)) redirect("/login");
-  const adminEmail = String(form.get("email") ?? "").trim().toLowerCase() || null;
-  if (!isDemoAuth() && !adminEmail) redirect("/setup?error=Укажите адрес администратора");
+  if (!isDemoAuth()) redirect("/setup");
   const { runSeed } = await import("@/server/seed");
   try {
-    await runSeed({ demo, adminEmail });
+    const r = await runSeed({ demo: true, budgetMs: 30_000 });
+    redirect(r.complete ? "/setup?done=1" : "/setup?step=1");
   } catch (e) {
+    if ((e as { digest?: string }).digest?.startsWith("NEXT_REDIRECT")) throw e;
     console.error("setup", e);
-    redirect(`/setup?error=${encodeURIComponent(`Заполнение остановлено: ${(e as Error).message}`)}`);
+    redirect(`/setup?error=${encodeURIComponent(`Этап остановлен: ${(e as Error).message}`)}`);
   }
-  redirect("/login");
 }
 
-export default async function SetupPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  const { error } = await searchParams;
-  const s = await state();
+async function resetDemo(form: FormData) {
+  "use server";
+  if (!isDemoAuth()) redirect("/setup?error=Сброс доступен только в демо-режиме");
+  if (!keyOk(form)) redirect("/setup?error=Неверный ключ развёртывания");
+  const { resetDemoDatabase } = await import("@/server/seed");
+  await resetDemoDatabase();
+  redirect("/setup");
+}
+
+async function initLive(form: FormData) {
+  "use server";
+  if (isDemoAuth()) redirect("/setup");
+  if (!keyOk(form)) redirect("/setup?error=Неверный ключ развёртывания");
+  if (await hasAdmin()) redirect("/login");
+  const email = String(form.get("email") ?? "").trim().toLowerCase();
+  const fullName = String(form.get("fullName") ?? "").trim();
+  if (!email || !fullName) redirect("/setup?error=Укажите ФИО и адрес администратора");
+  const { runSeed } = await import("@/server/seed");
+  await runSeed({ demo: false, adminEmail: email });
+  const u = await db.query.users.findFirst({ where: eq(schema.users.email, email) });
+  if (u) {
+    await db.update(schema.users).set({ fullName, firstName: fullName.split(/\s+/)[1] ?? fullName }).where(eq(schema.users.id, u.id));
+    await createSession(u.id);
+  }
+  redirect("/admin/members");
+}
+
+export default async function SetupPage({ searchParams }: { searchParams: Promise<{ error?: string; step?: string; done?: string }> }) {
+  const sp = await searchParams;
   const demo = isDemoAuth();
-  if (s.orgs > 0 && !(demo && s.cases === 0)) redirect("/login");
-  const org = s.orgs > 0 ? await db.query.organizations.findFirst() : null;
-  void eq;
+  const progress = await seedProgress();
+
+  if (!demo && progress.org && (await hasAdmin())) redirect("/login");
+
+  const [{ n: realCases }] = progress.org ? await db.select({ n: count() }).from(schema.cases).where(and(eq(schema.cases.organizationId, progress.org.id))) : [{ n: 0 }];
+  const started = !!progress.org;
+  const autoRun = demo && !!sp.step && !progress.demoComplete && !sp.error;
 
   return (
     <main className="grid min-h-dvh place-items-center px-4 py-10">
-      <div className="w-full max-w-[460px]">
+      <div className="w-full max-w-[480px]">
         <div className="mb-8 flex items-center gap-3">
           <Emblem className="size-11" />
           <p className="font-serif text-[20px] text-ink">Первичная настройка</p>
         </div>
-        <form action={setup} className="space-y-4 rounded-lg border border-line bg-surface p-6">
-          {error && <Notice tone="bad" title={error} />}
+        <div className="space-y-4 rounded-lg border border-line bg-surface p-6">
+          {sp.error && <Notice tone="bad" title={sp.error} />}
           {demo ? (
             <>
-              <p className="text-[14px] text-ink-2">База пуста{org ? " (организация создана, дел нет)" : ""}. Платформа создаст организацию, состав из 30 участников и несколько дел на разных этапах. Все письма и подписи — тестовые, наружу ничего не уходит.</p>
-              <input type="hidden" name="demo" value="1" />
-              <Field label="Ваш адрес (необязательно)" hint="Добавит вас председателем и администратором">
-                <Input type="email" name="email" placeholder="name@example.kz" />
-              </Field>
-              <Button className="w-full">Заполнить демонстрационными данными</Button>
-              <p className="text-[12.5px] text-ink-3">Заполнение занимает до минуты: каждое дело проходит маршрут через настоящие сервисы платформы.</p>
+              {progress.demoComplete ? (
+                <Notice tone="ok" title="Демонстрационные данные готовы">
+                  <a className="text-petrol underline" href="/login">Перейти ко входу</a>
+                </Notice>
+              ) : (
+                <p className="text-[14px] text-ink-2">
+                  Платформа создаст организацию, состав из 30 участников и дела на разных этапах. Каждое дело проходит маршрут через настоящие сервисы платформы. Письма и подписи — тестовые, наружу ничего не уходит.
+                </p>
+              )}
+              <ol className="space-y-1.5 text-[13.5px]">
+                {DEMO_STAGES.map((s) => {
+                  const done = progress.done.includes(s.key);
+                  return (
+                    <li key={s.key} className="flex items-center gap-2">
+                      <span aria-hidden className={done ? "text-ok" : "text-ink-4"}>{done ? "✓" : "○"}</span>
+                      <span className={done ? "text-ink" : "text-ink-3"}>{s.label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              {!progress.demoComplete && (
+                <form action={continueDemo}>
+                  {autoRun && <AutoContinue />}
+                  <Button className="w-full">{started ? "Продолжить заполнение" : "Заполнить демонстрационными данными"}</Button>
+                  <p className="mt-2 text-[12.5px] text-ink-3">Заполнение идёт порциями и продолжается само; страницу не закрывайте.</p>
+                </form>
+              )}
+              {(started || realCases > 0) && (
+                <details className="border-t border-line pt-4">
+                  <summary className="cursor-pointer text-[13px] text-ink-3 hover:text-petrol">Сбросить демо-базу</summary>
+                  <form action={resetDemo} className="mt-3 space-y-3">
+                    <p className="text-[13px] text-ink-2">Все данные будут удалены без возможности восстановления. Сброс работает только в демо-режиме.</p>
+                    <Field label="Ключ развёртывания" hint="Значение CRON_SECRET в Vercel"><Input type="password" name="key" required /></Field>
+                    <Button variant="danger" className="w-full">Удалить все данные</Button>
+                  </form>
+                </details>
+              )}
             </>
           ) : (
-            <>
-              <p className="text-[14px] text-ink-2">Будут созданы организация и учётная запись администратора. Состав комиссии вносится затем в администрировании.</p>
-              <Field label="Адрес администратора"><Input type="email" name="email" required /></Field>
-              <Field label="Ключ развёртывания" hint="Значение переменной CRON_SECRET в Vercel"><Input type="password" name="key" required /></Field>
-              <Button className="w-full">Создать организацию</Button>
-            </>
+            <form action={initLive} className="space-y-4">
+              <p className="text-[14px] text-ink-2">Будут созданы организация и учётная запись технического администратора. Вы сразу войдёте и сможете внести состав комиссии и подключить почту.</p>
+              <Field label="ФИО администратора"><Input name="fullName" required autoComplete="name" /></Field>
+              <Field label="Адрес администратора"><Input type="email" name="email" required autoComplete="email" /></Field>
+              <Field label="Ключ развёртывания" hint="Значение CRON_SECRET в Vercel"><Input type="password" name="key" required /></Field>
+              <Button className="w-full">Создать организацию и войти</Button>
+            </form>
           )}
-        </form>
+        </div>
       </div>
     </main>
   );

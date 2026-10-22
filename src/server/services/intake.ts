@@ -267,6 +267,8 @@ export async function ingestMessage(accountId: string, providerMessageId: string
 
   const bodyText = cleanText(fm.bodyText || (fm.bodyHtml ? htmlToText(fm.bodyHtml) : ""));
   const outgoingHeader = direction === "out" ? extractRawHeader(fm.raw, "X-KZPPA-Outgoing-Id") : null;
+  // Служебные письма платформы (коды входа, проверка подключения) не являются материалами дел.
+  if (outgoingHeader?.startsWith("svc-")) return { messageId: null, created: false, skipped: "Служебное письмо платформы" };
 
   const inserted = await db.transaction(async (tx) => {
     const [row] = await tx

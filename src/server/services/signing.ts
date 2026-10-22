@@ -36,6 +36,23 @@ import type { SessionUser } from "../auth";
 
 type Session = typeof schema.signSessions.$inferSelect;
 
+/** Отдельная процедура eGov «только вход в SIGEX» (продолжение после auth_required). */
+interface AuthProcedure {
+  procedureId: string;
+  qrCodeDataUrl: string | null;
+  mobileLink: string | null;
+  businessLink: string | null;
+  dataUrl: string;
+  signUrl: string;
+  expireAt: string;
+  nonce: string;
+  state: "created" | "waiting" | "signed" | "used" | "expired" | "refused" | "error";
+  /** Подпись nonce — одноразовый токен; стирается сразу после попытки входа. */
+  signature?: string | null;
+  error?: string | null;
+  startedAt: string;
+}
+
 interface SessionUrls {
   procedureId?: string;
   qrCodeDataUrl?: string | null;
@@ -45,7 +62,14 @@ interface SessionUrls {
   signUrl?: string;
   devApproved?: boolean;
   devApprovedAt?: string;
+  /** Nonce входа SIGEX, подписываемый в той же процедуре, что и заключение. */
+  authNonce?: string | null;
+  /** Подпись nonce (одноразовая; стирается после попытки входа, в журналы не пишется). */
+  authSignature?: string | null;
+  auth?: AuthProcedure | null;
 }
+
+const urlsOf = (s: Session) => (s.urls ?? {}) as SessionUrls;
 
 interface ProviderEntry {
   step: string;
@@ -127,6 +151,7 @@ function procedureOf(s: Session): SignProcedure | null {
     dataUrl: u.dataUrl,
     signUrl: u.signUrl,
     expireAt: s.expireAt ?? new Date(0),
+    authNonce: u.authNonce ?? null,
   };
 }
 
@@ -251,9 +276,9 @@ async function ensureProcedure(sessionId: string): Promise<Session> {
     await moveSession(db, s, "error", { lastError: (e as Error).message }, [{ step: "start.failed", at: new Date().toISOString(), error: (e as Error).message }]);
     throw e;
   }
-  const urls: SessionUrls = { procedureId: proc.procedureId, qrCodeDataUrl: proc.qrCodeDataUrl, mobileLink: proc.mobileLink, businessLink: proc.businessLink, dataUrl: proc.dataUrl, signUrl: proc.signUrl };
+  const urls: SessionUrls = { procedureId: proc.procedureId, qrCodeDataUrl: proc.qrCodeDataUrl, mobileLink: proc.mobileLink, businessLink: proc.businessLink, dataUrl: proc.dataUrl, signUrl: proc.signUrl, authNonce: proc.authNonce ?? null };
   await db.transaction(async (tx) => {
-    await patchSession(tx, s.id, { procedureId: proc.procedureId, urls, expireAt: proc.expireAt }, [{ step: "start", at: new Date().toISOString(), procedureId: proc.procedureId, expireAt: proc.expireAt.toISOString(), provider: adapter.mode }]);
+    await patchSession(tx, s.id, { procedureId: proc.procedureId, urls, expireAt: proc.expireAt }, [{ step: "start", at: new Date().toISOString(), procedureId: proc.procedureId, expireAt: proc.expireAt.toISOString(), provider: adapter.mode, withAuthNonce: !!proc.authNonce }]);
     await enqueue(tx, { orgId: s.organizationId, type: "sign.poll", aggregateType: "sign_session", aggregateId: s.id, idempotencyKey: `sign.poll:${s.id}` });
   });
   return { ...s, procedureId: proc.procedureId, urls, expireAt: proc.expireAt };
@@ -272,6 +297,14 @@ export interface SigningStatus {
   verification: { cryptoValid: boolean | null; trustChecked: boolean | null; unavailable: boolean; checkedAt: string | null; dryRun: boolean } | null;
   error: string | null;
   provider: string;
+  /** Процедура входа в SIGEX (только в состоянии auth_required). */
+  auth: { state: AuthProcedure["state"]; qrCodeDataUrl: string | null; mobileLink: string | null; businessLink: string | null; expireAt: string | null; error: string | null } | null;
+}
+
+function authView(a: AuthProcedure | null | undefined): SigningStatus["auth"] {
+  if (!a) return null;
+  const active = a.state === "created" || a.state === "waiting";
+  return { state: a.state, qrCodeDataUrl: active ? a.qrCodeDataUrl : null, mobileLink: active ? a.mobileLink : null, businessLink: active ? a.businessLink : null, expireAt: a.expireAt, error: a.error ?? null };
 }
 
 /** Статус для опроса интерфейсом (conclusion.sign или case.read_root). */
@@ -280,8 +313,9 @@ export async function getSigningStatus(user: SessionUser, sessionId: string): Pr
   if (!s || s.organizationId !== user.orgId) return { ok: false, error: "Сеанс подписи не найден" };
   if (!can(user.principal, "conclusion.sign", { caseId: s.caseId }) && !can(user.principal, "case.read_root", { caseId: s.caseId })) return { ok: false, error: "Недостаточно полномочий для этого действия" };
   const state = s.state as SignSessionState;
-  if ([...ACTIVE, "signature_saved", "registered"].includes(state)) kickSoon(s.id); // ускорение; фоновой обработке вкладка не нужна
   const u = (s.urls ?? {}) as SessionUrls;
+  if ([...ACTIVE, "signature_saved", "registered"].includes(state)) kickSoon(s.id); // ускорение; фоновой обработке вкладка не нужна
+  else if (state === "auth_required" && u.auth && ["created", "waiting", "signed"].includes(u.auth.state)) kickSoon(s.id);
   const ver = s.verification as (Verification & { dryRun?: boolean }) | null;
   const showSessionQr = ACTIVE.includes(state);
   return {
@@ -299,8 +333,55 @@ export async function getSigningStatus(user: SessionUser, sessionId: string): Pr
       verification: ver ? { cryptoValid: ver.cryptoValid, trustChecked: ver.trustChecked, unavailable: ver.unavailable, checkedAt: ver.checkedAt ?? null, dryRun: s.provider === "dry-run" } : null,
       error: s.lastError,
       provider: s.provider,
+      auth: state === "auth_required" ? authView(u.auth) : null,
     },
   };
+}
+
+/**
+ * Продолжение после auth_required: отдельная процедура eGov только для входа в SIGEX.
+ * Председатель подписывает новый nonce; подпись заключения уже сохранена — повторно не подписывается.
+ */
+export async function startSigexAuth(user: SessionUser, sessionId: string): Promise<{ ok: true; data: NonNullable<SigningStatus["auth"]> } | { ok: false; error: string }> {
+  const s0 = await loadSession(sessionId);
+  const r = await runCommand({ name: "sign.auth_start", user, permission: { action: "conclusion.sign", caseId: s0?.caseId } }, async ({ tx, actor, orgId }) => {
+    const s = await tx.query.signSessions.findFirst({ where: and(eq(schema.signSessions.id, sessionId), eq(schema.signSessions.organizationId, orgId)) });
+    if (!s) throw new CommandError("Сеанс подписи не найден");
+    if (s.state !== "auth_required") throw new CommandError("Вход в SIGEX нужен, только когда регистрация подписи требует авторизации");
+    const a = urlsOf(s).auth;
+    const reusable = !!a && (a.state === "created" || a.state === "waiting") && new Date(a.expireAt).getTime() > Date.now() + 30_000;
+    if (!reusable) await audit(tx, { orgId, actor, action: "sign.auth_start", objectType: "sign_session", objectId: s.id, caseId: s.caseId });
+    return { reused: reusable };
+  });
+  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.data.reused) {
+    const adapter = getSignAdapter();
+    try {
+      const proc = await adapter.startAuth({ description: "Вход в SIGEX: регистрация ЭЦП заключения КЗППА от имени подписанта" });
+      const s = (await loadSession(sessionId))!;
+      const auth: AuthProcedure = {
+        procedureId: proc.procedureId,
+        qrCodeDataUrl: proc.qrCodeDataUrl,
+        mobileLink: proc.mobileLink,
+        businessLink: proc.businessLink,
+        dataUrl: proc.dataUrl,
+        signUrl: proc.signUrl,
+        expireAt: proc.expireAt.toISOString(),
+        nonce: proc.authNonce,
+        state: "created",
+        startedAt: new Date().toISOString(),
+      };
+      await db.transaction(async (tx) => {
+        await patchSession(tx, s.id, { urls: { ...urlsOf(s), auth } }, [{ step: "auth.start", at: auth.startedAt, procedureId: proc.procedureId, expireAt: auth.expireAt }]);
+        await enqueue(tx, { orgId: s.organizationId, type: "sign.poll", aggregateType: "sign_session", aggregateId: s.id, idempotencyKey: `sign.poll:${s.id}:auth:${proc.procedureId}` });
+      });
+    } catch (e) {
+      return { ok: false, error: `Не удалось начать вход в SIGEX: ${(e as Error).message}` };
+    }
+  }
+  kickSoon(sessionId, ["sign.poll"]);
+  const s = (await loadSession(sessionId))!;
+  return { ok: true, data: authView(urlsOf(s).auth)! };
 }
 
 /** AT-14: продолжить с нужного шага (авторизация, сверка, проверка) без повторной подписи. */
@@ -337,6 +418,7 @@ const pollHandler: Handler = async (row) => {
     await enqueueRegister(s);
     return { status: "done", note: "Подпись уже сохранена" };
   }
+  if (state === "auth_required") return authPoll(row, s);
   if (!ACTIVE.includes(state)) return { status: "done", note: `Сеанс в состоянии ${state}` };
 
   if (state === "created" && !s.procedureId) {
@@ -375,7 +457,7 @@ const pollHandler: Handler = async (row) => {
   const r = await adapter.poll(((s.urls ?? {}) as SessionUrls).signUrl ?? proc.signUrl);
   switch (r.status) {
     case "signed":
-      await saveSignature(s, r.signature.cms, r.signature.signatureType, r.signature.providerResponse);
+      await saveSignature(s, r.signature.cms, r.signature.signatureType, r.signature.providerResponse, r.signature.authSignature ?? null);
       await enqueueRegister(s);
       return { status: "done" };
     case "waiting":
@@ -395,6 +477,71 @@ const pollHandler: Handler = async (row) => {
   }
 };
 
+/** Обновить процедуру входа (jsonb urls.auth), сохранив остальные поля сеанса. */
+async function setAuth(s: Session, next: AuthProcedure, responses?: ProviderEntry[]) {
+  const fresh = (await loadSession(s.id)) ?? s;
+  const urls = { ...urlsOf(fresh), auth: next };
+  await patchSession(db, s.id, { urls }, responses);
+  s.urls = urls;
+}
+
+/** Опрос процедуры «только вход в SIGEX» (в состоянии auth_required). */
+async function authPoll(row: OutboxRow, s: Session): ReturnType<Handler> {
+  const a = urlsOf(s).auth;
+  if (!a || (a.state !== "created" && a.state !== "waiting")) return { status: "done", note: "Нет активной процедуры входа" };
+  const adapter = getSignAdapter();
+  const exp = new Date(a.expireAt);
+  const now = () => new Date().toISOString();
+  if (Date.now() > exp.getTime() + EXPIRE_GRACE_MS) {
+    await setAuth(s, { ...a, state: "expired", error: "Срок процедуры входа истёк" }, [{ step: "auth.expired", at: now() }]);
+    return { status: "done" };
+  }
+  const proc = { procedureId: a.procedureId, qrCodeDataUrl: a.qrCodeDataUrl, mobileLink: a.mobileLink, businessLink: a.businessLink, dataUrl: a.dataUrl, signUrl: a.signUrl, expireAt: exp, authNonce: a.nonce };
+  if (a.state === "created") {
+    try {
+      const sub = await adapter.submitAuth(proc);
+      await setAuth(s, { ...a, state: "waiting", signUrl: sub.signUrl, expireAt: (sub.expireAt ?? exp).toISOString() }, [{ step: "auth.submit", at: now() }]);
+      await resetAttempts(row);
+      return { status: "retry", error: "Ожидание подтверждения входа", delayMs: 300 };
+    } catch (e) {
+      if (isNotDelivered(e)) {
+        await resetAttempts(row);
+        return { status: "retry", error: "Ожидание подключения eGov Mobile", delayMs: 200 };
+      }
+      if (/expired|timeout|not active/i.test((e as Error).message)) {
+        await setAuth(s, { ...a, state: "expired", error: (e as Error).message }, [{ step: "auth.expired", at: now() }]);
+        return { status: "done" };
+      }
+      return { status: "retry", error: (e as Error).message };
+    }
+  }
+  const r = await adapter.pollAuth(a.signUrl);
+  switch (r.status) {
+    case "signed":
+      await setAuth(s, { ...a, state: "signed", signature: r.authSignature, error: null }, [{ step: "auth.signed", at: now() }]);
+      await db.transaction(async (tx) => {
+        await enqueue(tx, { orgId: s.organizationId, type: "sign.register_verify", aggregateType: "sign_session", aggregateId: s.id, idempotencyKey: `sign.register_verify:${s.id}:auth:${a.procedureId}` });
+      });
+      kickSoon(s.id, ["sign.register_verify"]);
+      return { status: "done" };
+    case "waiting":
+      await resetAttempts(row);
+      return { status: "retry", error: "Ожидание подтверждения входа в eGov", delayMs: POLL_DELAY_MS };
+    case "expired":
+      await setAuth(s, { ...a, state: "expired", error: "Срок процедуры входа истёк" }, [{ step: "auth.expired", at: now() }]);
+      return { status: "done" };
+    case "refused":
+      await setAuth(s, { ...a, state: "refused", error: r.reason ?? "Вход отменён" }, [{ step: "auth.refused", at: now() }]);
+      return { status: "done" };
+    case "error":
+      if (!r.retryable) {
+        await setAuth(s, { ...a, state: "error", error: r.error }, [{ step: "auth.error", at: now(), error: r.error }]);
+        return { status: "done" };
+      }
+      return { status: "retry", error: r.error };
+  }
+}
+
 async function finish(s: Session, to: "expired" | "refused" | "error", reason: string): Promise<{ status: "done" }> {
   await db.transaction(async (tx) => {
     await moveSession(tx, s, to, { lastError: reason }, [{ step: to, at: new Date().toISOString(), reason }]);
@@ -407,15 +554,17 @@ async function finish(s: Session, to: "expired" | "refused" | "error", reason: s
  * SIGN-04: подпись сохраняется немедленно — байты, хеш, документ и ответ поставщика —
  * до регистрации и проверки. CMS хранится отдельно как служебное доказательство (DOC-10).
  */
-async function saveSignature(s: Session, cms: Uint8Array, signatureType: "cms", providerResponse: unknown) {
+async function saveSignature(s: Session, cms: Uint8Array, signatureType: "cms", providerResponse: unknown, authSignature: string | null) {
   const isDry = s.provider === "dry-run";
   const blob = await putImmutable(s.organizationId, cms, isDry ? "application/json" : "application/pkcs7-signature");
   const v = await db.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, s.documentVersionId) });
   const base = (v?.filename ?? "conclusion.pdf").replace(/\.pdf$/i, "");
   const receivedAt = new Date();
   await db.transaction(async (tx) => {
-    await moveSession(tx, s, "signature_saved", { signatureBlobId: blob.id, signatureType, receivedAt, lastError: null }, [
-      { step: "signature_received", at: receivedAt.toISOString(), signatureSha256: blob.sha256, size: blob.size, response: providerResponse as Record<string, unknown> },
+    // Подпись nonce входа хранится в сеансе до первой попытки входа (не в журнале и не в ответах поставщика).
+    const urlPatch = authSignature ? { urls: { ...urlsOf(s), authSignature } } : {};
+    await moveSession(tx, s, "signature_saved", { signatureBlobId: blob.id, signatureType, receivedAt, lastError: null, ...urlPatch }, [
+      { step: "signature_received", at: receivedAt.toISOString(), signatureSha256: blob.sha256, size: blob.size, withAuthSignature: !!authSignature, response: providerResponse as Record<string, unknown> },
     ]);
     const [doc] = await tx
       .insert(schema.documents)
@@ -454,6 +603,12 @@ function openRegisterAttempt(s: Session): string | null {
   return closed ? null : req.attemptId;
 }
 
+class AuthInProgress extends Error {
+  constructor() {
+    super("Вход в SIGEX выполняет параллельная обработка");
+  }
+}
+
 /** SIGN-05..07, DOC-12, BR-05. */
 const registerVerifyHandler: Handler = async (row) => {
   const s = await loadSession(row.aggregateId);
@@ -465,6 +620,55 @@ const registerVerifyHandler: Handler = async (row) => {
   const sig = await readBlob(s.signatureBlobId);
   const cms = sig.bytes;
 
+  /*
+   * Вход в SIGEX от имени подписанта: по подписи nonce из процедуры подписания или из отдельной
+   * процедуры входа. Сессия (cookie) живёт только в памяти этого обработчика и не сохраняется.
+   * Подпись nonce одноразовая — стирается сразу после попытки входа.
+   */
+  let cookie: string | null = null;
+  let authTried = false;
+  const tryAuth = async (): Promise<string | null | "taken"> => {
+    if (authTried) return null;
+    authTried = true;
+    const fresh = (await loadSession(s.id)) ?? s;
+    const u = urlsOf(fresh);
+    const pair =
+      u.authNonce && u.authSignature
+        ? { nonce: u.authNonce, signature: u.authSignature, source: "signing" }
+        : u.auth?.state === "signed" && u.auth.signature
+          ? { nonce: u.auth.nonce, signature: u.auth.signature, source: "auth_procedure" }
+          : null;
+    if (!pair) return null;
+    const cleared: SessionUrls = { ...u, authSignature: null, auth: u.auth ? { ...u.auth, signature: null, state: u.auth.state === "signed" ? "used" : u.auth.state } : u.auth };
+    // Атомарный захват одноразового токена: параллельный обработчик не сможет использовать его повторно.
+    const claimed = await db.execute(
+      sql`update sign_sessions set urls = ${JSON.stringify(cleared)}::jsonb where id = ${s.id} and (urls->>'authSignature' = ${pair.signature} or urls->'auth'->>'signature' = ${pair.signature}) returning id`,
+    );
+    if (!(claimed as unknown as unknown[]).length) return "taken";
+    s.urls = cleared;
+    try {
+      const r = await adapter.authenticate(pair.nonce, pair.signature);
+      await patchSession(db, s.id, {}, [{ step: "auth.ok", at: new Date().toISOString(), source: pair.source, userId: r.userId }]);
+      return r.cookie;
+    } catch (e) {
+      await patchSession(db, s.id, {}, [{ step: "auth.failed", at: new Date().toISOString(), source: pair.source, error: (e as Error).message }]);
+      return null;
+    }
+  };
+  /** Выполнить шаг; при «Authentication required» — войти по подписи nonce и повторить один раз. */
+  const withAuth = async <T>(fn: (authCookie: string | null) => Promise<T>): Promise<T> => {
+    try {
+      return await fn(cookie);
+    } catch (e) {
+      if (!(e instanceof AuthRequiredError) || cookie) throw e;
+      const c = await tryAuth();
+      if (c === "taken") throw new AuthInProgress();
+      if (!c) throw e;
+      cookie = c;
+      return fn(cookie);
+    }
+  };
+
   try {
     // Авторизация потребовалась уже после регистрации (на шаге проверки) — регистрацию не повторяем.
     if (s.state === "auth_required" && s.registrationId) await moveSession(db, s, "registered", { lastError: null });
@@ -475,10 +679,10 @@ const registerVerifyHandler: Handler = async (row) => {
     }
 
     if (s.state === "needs_reconcile") {
-      const found = await adapter.reconcile({ cms, documentSha256: s.documentSha256 });
+      const found = await withAuth((authCookie) => adapter.reconcile({ cms, documentSha256: s.documentSha256, authCookie }));
       const attemptId = openRegisterAttempt(s);
       if (found) {
-        const extra = "ensureData" in adapter ? await (adapter as SignAdapter & { ensureData(id: string, b: Uint8Array): Promise<unknown> }).ensureData(found.registrationId, bytes) : null;
+        const extra = "ensureData" in adapter ? await withAuth((c) => (adapter as SignAdapter & { ensureData(id: string, b: Uint8Array, c?: string | null): Promise<unknown> }).ensureData(found.registrationId, bytes, c)) : null;
         await moveSession(db, s, "registered", { registrationId: found.registrationId, lastError: null }, [{ step: "reconcile.found", at: new Date().toISOString(), attemptId, registrationId: found.registrationId, data: extra as Record<string, unknown> | null }]);
       } else {
         // Только установив отсутствие регистрации, разрешаем новую операцию.
@@ -493,12 +697,18 @@ const registerVerifyHandler: Handler = async (row) => {
       s.providerResponses = [...((s.providerResponses as ProviderEntry[]) ?? []), { step: "register.request", at: "", attemptId }];
       try {
         const v = await db.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, s.documentVersionId) });
-        const reg = await adapter.register({ documentName: v?.filename ?? "conclusion.pdf", documentBytes: bytes, cms, private: true });
+        // «Authentication required» — явный отказ (запрос не применён), поэтому повтор после входа безопасен.
+        const reg = await withAuth((authCookie) => adapter.register({ documentName: v?.filename ?? "conclusion.pdf", documentBytes: bytes, cms, private: true, authCookie }));
         await db.transaction(async (tx) => {
           await moveSession(tx, s, "registered", { registrationId: reg.registrationId, lastError: null }, [{ step: "register.response", at: new Date().toISOString(), attemptId, registrationId: reg.registrationId, response: reg.response as Record<string, unknown> }]);
           await audit(tx, { orgId: s.organizationId, actor: SERVICE_ACTOR, action: "sign.registered", objectType: "sign_session", objectId: s.id, caseId: s.caseId, externalIds: { registrationId: reg.registrationId }, after: { private: true } });
         });
       } catch (e) {
+        if (e instanceof AuthInProgress) {
+          // Запрос был явно отклонён («Authentication required») — попытка закрыта, сверка не нужна.
+          await patchSession(db, s.id, {}, [{ step: "register.failed", at: new Date().toISOString(), attemptId, auth: true }]);
+          throw e;
+        }
         if (e instanceof AuthRequiredError) throw e;
         if (maybeApplied(e)) {
           await moveSession(db, s, "needs_reconcile", { lastError: (e as Error).message }, [{ step: "register.unknown", at: new Date().toISOString(), attemptId, error: (e as Error).message }]);
@@ -509,9 +719,11 @@ const registerVerifyHandler: Handler = async (row) => {
       }
     }
 
-    if (s.state === "registered") return await verifyStep(s, adapter, bytes, cms);
+    if (s.state === "registered") return await verifyStep(s, adapter, bytes, cms, withAuth);
     return { status: "done", note: `Сеанс в состоянии ${s.state}` };
   } catch (e) {
+    // Токен входа забрал параллельный обработчик — он и завершит шаг; здесь повторим позже.
+    if (e instanceof AuthInProgress) return { status: "retry", error: e.message, delayMs: 5_000 };
     if (e instanceof AuthRequiredError) {
       // SIGN-06: «Authentication required» — нужна авторизация для шага, подпись сохраняется.
       // Попытку закрываем, только если отказ пришёл на сам запрос регистрации (а не на сверку/проверку).
@@ -522,7 +734,7 @@ const registerVerifyHandler: Handler = async (row) => {
         } else {
           await patchSession(tx, s.id, { lastError: e.message }, attemptId ? [{ step: "register.failed", at: new Date().toISOString(), attemptId, auth: true }] : undefined);
         }
-        await chairTask(tx, s, "sign_auth", "Требуется авторизация в SIGEX для регистрации и проверки ЭЦП", "Подпись председателя получена и сохранена. Поставщик подписи требует авторизации для следующего шага. Это не означает отсутствия подписи. После авторизации нажмите «Продолжить проверку» — повторно подписывать не нужно.");
+        await chairTask(tx, s, "sign_auth", "Подтвердите вход в SIGEX для регистрации ЭЦП", "Подпись председателя получена и сохранена. Для её регистрации SIGEX требует входа от имени подписанта. Откройте дело, нажмите «Подтвердить вход в SIGEX» и отсканируйте QR в eGov Mobile. Повторно подписывать заключение не нужно.");
         await audit(tx, { orgId: s.organizationId, actor: SERVICE_ACTOR, action: "sign.auth_required", objectType: "sign_session", objectId: s.id, caseId: s.caseId, result: "error", basis: e.message });
       });
       return { status: "done", note: "Нужна авторизация" };
@@ -531,8 +743,8 @@ const registerVerifyHandler: Handler = async (row) => {
   }
 };
 
-async function verifyStep(s: Session, adapter: SignAdapter, bytes: Uint8Array, cms: Uint8Array) {
-  const ver = await adapter.verify({ documentBytes: bytes, cms, registrationId: s.registrationId });
+async function verifyStep(s: Session, adapter: SignAdapter, bytes: Uint8Array, cms: Uint8Array, withAuth: <T>(fn: (c: string | null) => Promise<T>) => Promise<T>) {
+  const ver = await withAuth((authCookie) => adapter.verify({ documentBytes: bytes, cms, registrationId: s.registrationId, authCookie }));
   const isDry = s.provider === "dry-run";
   const verification = { ...ver, dryRun: isDry };
 
@@ -556,7 +768,10 @@ async function verifyStep(s: Session, adapter: SignAdapter, bytes: Uint8Array, c
   }
 
   await db.transaction(async (tx) => {
-    await moveSession(tx, s, "verified", { verification, actualSigner: ver.signer, lastError: null }, [{ step: "verify.ok", at: ver.checkedAt }]);
+    // Одноразовые данные входа больше не нужны.
+    const u = urlsOf(s);
+    const urls: SessionUrls = { ...u, authSignature: null, auth: u.auth ? { ...u.auth, signature: null } : u.auth };
+    await moveSession(tx, s, "verified", { verification, actualSigner: ver.signer, lastError: null, urls }, [{ step: "verify.ok", at: ver.checkedAt }]);
     const v = await tx.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, s.documentVersionId) });
     if (v && v.state !== "signed") {
       assertTransition(DOC_VERSION, "document_version", v.state as DocVersionState, "signed");

@@ -101,11 +101,10 @@ export async function openVoting(user: SessionUser, input: { cycleId: string; cl
         version: cycle.version + 1,
       })
       .where(eq(schema.cycles.id, cycle.id));
-    for (const m of members) {
-      await tx.insert(schema.caseMembers).values({ organizationId: orgId, caseId: kase.id, userId: m.id, role: "voter", cycleId: cycle.id, grantedBy: user.id });
-      const token = (await sha256Hex(`${cycle.id}:${m.id}:${crypto.randomUUID()}`)).slice(0, 40);
-      await tx.insert(schema.voteInvitations).values({ organizationId: orgId, cycleId: cycle.id, memberId: m.id, token, deliveryState: "pending" }).onConflictDoNothing();
-    }
+    // Пакетно: доступ к папке обсуждения и персональные приглашения (FLOW-05, FLOW-13).
+    await tx.insert(schema.caseMembers).values(members.map((m) => ({ organizationId: orgId, caseId: kase.id, userId: m.id, role: "voter", cycleId: cycle.id, grantedBy: user.id })));
+    const invitations = await Promise.all(members.map(async (m) => ({ organizationId: orgId, cycleId: cycle.id, memberId: m.id, token: (await sha256Hex(`${cycle.id}:${m.id}:${crypto.randomUUID()}`)).slice(0, 40), deliveryState: "pending" })));
+    await tx.insert(schema.voteInvitations).values(invitations).onConflictDoNothing();
     // Документ обсуждения доступен членам только на чтение.
     const draftDoc = await tx.query.documents.findFirst({ where: eq(schema.documents.id, draft!.documentId) });
     if (draftDoc) await tx.update(schema.documents).set({ area: "discussion", cycleId: cycle.id }).where(eq(schema.documents.id, draftDoc.id));

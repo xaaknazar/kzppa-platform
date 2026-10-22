@@ -3,6 +3,7 @@ import { env } from "@/server/env";
 import { sha256Hex } from "@/domain/hash";
 import {
   AuthRequiredError,
+  type AuthPollResult,
   type PollResult,
   type SignAdapter,
   type SignProcedure,
@@ -34,6 +35,12 @@ import {
  *    Известные строки: "Authentication required", "Access denied", "eGov signing operation expired",
  *    "QR signing operation timeout", "QR signing operation is not active", "This signature has already
  *    been submitted", "Document digests are already known", "Signature does not correspond to the document".
+ *
+ *  - Вход (проверено живым запросом 2026-10-22): POST /api/auth {} → {nonce} (base64);
+ *    POST /api/auth {nonce, signature: base64 DER CMS} → данные сертификата + Set-Cookie jwt=…
+ *    Nonce подписывается председателем в той же процедуре eGov, что и заключение (два документа,
+ *    signMethod MIX_SIGN). Если регистрация отвечает «Authentication required», платформа входит
+ *    по этой подписи и повторяет запрос с cookie. Cookie хранится только в памяти обработчика.
  *
  * Закрытый ключ и пароль председателя платформа не получает и не хранит (SIGN-01).
  * В журнал не пишутся тела запросов и подписи — только коды ответов.
@@ -86,6 +93,8 @@ function cmsBytesFrom(data: string): Uint8Array {
 
 interface CallOpts {
   method: "GET" | "POST";
+  /** Значение cookie jwt после входа в SIGEX (только в памяти). */
+  cookie?: string | null;
   json?: unknown;
   body?: Uint8Array;
   timeoutMs?: number;
@@ -100,9 +109,11 @@ async function call<T = Record<string, unknown>>(url: string, o: CallOpts): Prom
   const timer = setTimeout(() => ctrl.abort(), o.timeoutMs ?? FETCH_TIMEOUT_MS);
   let res: Response;
   try {
+    const headers: Record<string, string> = o.json !== undefined ? { "content-type": "application/json" } : o.body ? { "content-type": "application/octet-stream", "content-length": String(o.body.byteLength) } : {};
+    if (o.cookie) headers.cookie = `jwt=${o.cookie}`;
     res = await fetch(url, {
       method: o.method,
-      headers: o.json !== undefined ? { "content-type": "application/json" } : o.body ? { "content-type": "application/octet-stream", "content-length": String(o.body.byteLength) } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       body: o.json !== undefined ? JSON.stringify(o.json) : o.body ? (o.body as BodyInit) : undefined,
       signal: ctrl.signal,
       cache: "no-store",
@@ -172,6 +183,61 @@ interface SigexSignature {
 const toDate = (ms: unknown) => (typeof ms === "number" && Number.isFinite(ms) ? new Date(ms) : null);
 const iso = (ms: unknown) => toDate(ms)?.toISOString() ?? null;
 
+function procedureFrom(r: EgovQrStart, dataUrl: string, signUrl: string): SignProcedure {
+  // qrId — последний сегмент ссылки (…/api/egovQr/{qrId}); используется как идентификатор процедуры.
+  const procedureId = new URL(dataUrl).pathname.split("/").filter(Boolean).pop() ?? dataUrl;
+  return {
+    procedureId,
+    qrCodeDataUrl: r.qrCode ? `data:image/png;base64,${r.qrCode}` : null,
+    mobileLink: r.eGovMobileLaunchLink ?? null,
+    businessLink: r.eGovBusinessLaunchLink ?? null,
+    dataUrl,
+    signUrl,
+    expireAt: toDate(r.expireAt) ?? new Date(Date.now() + 5 * 60_000), // VERIFY: срок по умолчанию, если поля нет
+  };
+}
+
+/** Документ «подтверждение входа»: nonce SIGEX (base64), CMS с данными. */
+function authDocument(id: number, nonce: string) {
+  return {
+    id,
+    nameRu: "Подтверждение входа в SIGEX для регистрации подписи",
+    nameKz: "Қолтаңбаны тіркеу үшін SIGEX жүйесіне кіруді растау",
+    nameEn: "SIGEX sign-in confirmation",
+    meta: [{ name: "Назначение", value: "Вход платформы КЗППА в SIGEX от имени подписанта" }],
+    // VERIFY: mime для произвольных байтов. Документация приводит "" для SIGN_BYTES_ARRAY и
+    // "@file/pdf" для PDF; для CMS_WITH_DATA над nonce используем "" (данные — base64 nonce).
+    document: { file: { mime: "", data: nonce } },
+  };
+}
+
+/** Значение cookie jwt из ответа /api/auth. */
+export function jwtFromSetCookie(h: Headers): string | null {
+  const list: string[] =
+    typeof (h as Headers & { getSetCookie?: () => string[] }).getSetCookie === "function" ? (h as Headers & { getSetCookie: () => string[] }).getSetCookie() : [];
+  const raw = list.length ? list : (h.get("set-cookie") ?? "").split(/,(?=\s*[A-Za-z0-9_-]+=)/);
+  for (const c of raw) {
+    const m = c.match(/(?:^|\s)jwt=([^;]*)/);
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
+
+/** Ошибки длинного опроса signURL → результат опроса. */
+function mapPollError(e: unknown): { status: "waiting" } | { status: "expired" } | { status: "error"; error: string; retryable: boolean } {
+  if (e instanceof AuthRequiredError) return { status: "error", error: e.message, retryable: false };
+  if (e instanceof SigexError) {
+    const m = e.sigexMessage ?? "";
+    if (/expired|timeout/i.test(m)) return { status: "expired" };
+    if (/not active|not found/i.test(m)) return { status: "expired" }; // VERIFY: «не активна» после истечения/завершения
+    if (/Other endpoint connected/i.test(m)) return { status: "waiting" }; // другое соединение продолжает операцию
+    if (e.httpStatus === null) return { status: "waiting" }; // разрыв длинного соединения — опрашиваем снова
+    if (/eGov mobile data exchange failed/i.test(m)) return { status: "error", error: e.message, retryable: false };
+    return { status: "error", error: e.message, retryable: (e.httpStatus ?? 500) >= 500 || /rate limit|queue/i.test(m) };
+  }
+  return { status: "error", error: (e as Error).message, retryable: true };
+}
+
 export class SigexAdapter implements SignAdapter {
   readonly mode = "sigex" as const;
 
@@ -188,17 +254,86 @@ export class SigexAdapter implements SignAdapter {
     const dataUrl = r.dataURL ?? r.dataURLAuto;
     const signUrl = r.signURL ?? r.signURLAuto;
     if (!dataUrl || !signUrl) throw new SigexError("SIGEX не вернул ссылки dataURL/signURL", 200, null, false);
-    // qrId — последний сегмент ссылки (…/api/egovQr/{qrId}); используется как идентификатор процедуры.
-    const procedureId = new URL(dataUrl).pathname.split("/").filter(Boolean).pop() ?? dataUrl;
-    return {
-      procedureId,
-      qrCodeDataUrl: r.qrCode ? `data:image/png;base64,${r.qrCode}` : null,
-      mobileLink: r.eGovMobileLaunchLink ?? null,
-      businessLink: r.eGovBusinessLaunchLink ?? null,
-      dataUrl,
-      signUrl,
-      expireAt: toDate(r.expireAt) ?? new Date(Date.now() + 5 * 60_000), // VERIFY: срок по умолчанию, если поля нет
-    };
+    // Nonce входа: подпишется в той же процедуре. Неудача не мешает подписанию заключения.
+    const authNonce = await this.requestNonce().catch(() => null);
+    return { ...procedureFrom(r, dataUrl, signUrl), authNonce };
+  }
+
+  /** POST /api/auth {} → одноразовый nonce (base64). */
+  async requestNonce(): Promise<string> {
+    const r = await call<{ nonce?: string }>(`${base()}/api/auth`, { method: "POST", json: {} });
+    if (!r.nonce) throw new SigexError("SIGEX не выдал nonce для входа", 200, null, false);
+    return r.nonce;
+  }
+
+  /**
+   * Вход в SIGEX по подписанному nonce (внутренний режим: SIGEX ставит cookie jwt).
+   * Cookie возвращается вызывающему и нигде не сохраняется.
+   */
+  async authenticate(nonce: string, signatureB64: string): Promise<{ cookie: string; userId: string | null }> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${base()}/api/auth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ nonce, signature: signatureB64 }),
+        signal: ctrl.signal,
+        cache: "no-store",
+      });
+    } catch (e) {
+      throw new AuthRequiredError(`Вход в SIGEX не выполнен: нет ответа (${(e as Error).message})`);
+    } finally {
+      clearTimeout(timer);
+    }
+    let data: { message?: string; userId?: string } | null = null;
+    try {
+      data = (await res.json()) as { message?: string; userId?: string } | null;
+    } catch {
+      data = null; // не JSON
+    }
+    if (!res.ok || typeof data?.message === "string") {
+      // Типичный случай — nonce истёк или уже использован; подпись заключения при этом сохранена.
+      throw new AuthRequiredError(`SIGEX отклонил вход: ${data?.message ?? `HTTP ${res.status}`}. Подтвердите вход в SIGEX ещё раз — подпись заключения сохранена.`);
+    }
+    const cookie = jwtFromSetCookie(res.headers);
+    if (!cookie) throw new AuthRequiredError("SIGEX не вернул сессию входа (cookie jwt). Подтвердите вход в SIGEX ещё раз.");
+    return { cookie, userId: data?.userId ?? null };
+  }
+
+  /** Процедура eGov только для входа (продолжение после auth_required). */
+  async startAuth(p: { description: string }): Promise<SignProcedure & { authNonce: string }> {
+    const r = await call<EgovQrStart>(`${base()}/api/egovQr`, { method: "POST", json: { description: p.description.slice(0, 500), whenDone: { backUrl: env.appUrl } } });
+    const dataUrl = r.dataURL ?? r.dataURLAuto;
+    const signUrl = r.signURL ?? r.signURLAuto;
+    if (!dataUrl || !signUrl) throw new SigexError("SIGEX не вернул ссылки dataURL/signURL", 200, null, false);
+    const authNonce = await this.requestNonce();
+    return { ...procedureFrom(r, dataUrl, signUrl), authNonce };
+  }
+
+  async submitAuth(proc: SignProcedure & { authNonce: string }): Promise<{ signUrl: string; expireAt?: Date | null }> {
+    const body = { signMethod: "CMS_WITH_DATA", documentsToSign: [authDocument(1, proc.authNonce)] };
+    const budget = Math.max(5_000, Math.min(LONG_POLL_MS, proc.expireAt.getTime() - Date.now()));
+    const r = await call<{ expireAt?: number; signURL?: string; signURLAuto?: string }>(proc.dataUrl, { method: "POST", json: body, timeoutMs: budget });
+    return { signUrl: r.signURL ?? r.signURLAuto ?? proc.signUrl, expireAt: toDate(r.expireAt) };
+  }
+
+  async pollAuth(signUrl: string): Promise<AuthPollResult> {
+    let r: EgovSignResult;
+    try {
+      r = await call<EgovSignResult>(signUrl, { method: "GET", timeoutMs: LONG_POLL_MS });
+    } catch (e) {
+      return mapPollError(e);
+    }
+    if ((r.status ?? "").toUpperCase() === "CANCELED") return { status: "refused", reason: "Вход отменён в приложении eGov" };
+    const data = (r.documentsToSign?.find((d) => String(d.id) === "1") ?? r.documentsToSign?.[0])?.document?.file?.data;
+    if (!data) return { status: "error", error: "SIGEX вернул ответ без подписи входа", retryable: false };
+    try {
+      return { status: "signed", authSignature: b64(cmsBytesFrom(data)) };
+    } catch {
+      return { status: "error", error: "Подпись входа в ответе SIGEX не декодируется", retryable: false };
+    }
   }
 
   /**
@@ -208,22 +343,21 @@ export class SigexAdapter implements SignAdapter {
    */
   async submit(proc: SignProcedure, documentBytes: Uint8Array, meta: { documentName: string }): Promise<{ signUrl: string; expireAt?: Date | null }> {
     const sha = await sha256Hex(documentBytes);
-    const body = {
-      signMethod: "CMS_SIGN_ONLY",
-      documentsToSign: [
-        {
-          id: 1,
-          nameRu: meta.documentName,
-          nameKz: meta.documentName,
-          nameEn: meta.documentName,
-          meta: [
-            { name: "SHA-256", value: sha },
-            { name: "Размер, байт", value: String(documentBytes.byteLength) },
-          ],
-          document: { file: { mime: "@file/pdf", data: b64(documentBytes) } },
-        },
+    const pdfDoc = {
+      id: 1,
+      nameRu: meta.documentName,
+      nameKz: meta.documentName,
+      nameEn: meta.documentName,
+      meta: [
+        { name: "SHA-256", value: sha },
+        { name: "Размер, байт", value: String(documentBytes.byteLength) },
       ],
+      document: { file: { mime: "@file/pdf", data: b64(documentBytes) } },
     };
+    // С nonce — одна процедура на два документа: заключение (открепленная CMS) и подтверждение входа.
+    const body = proc.authNonce
+      ? { signMethod: "MIX_SIGN", documentsToSign: [{ ...pdfDoc, signMethod: "CMS_SIGN_ONLY" }, { ...authDocument(2, proc.authNonce), signMethod: "CMS_WITH_DATA" }] }
+      : { signMethod: "CMS_SIGN_ONLY", documentsToSign: [pdfDoc] };
     // Ждём не дольше срока процедуры и лимита функции; при таймауте процедура остаётся в силе —
     // фоновый опрос signURL продолжит работу, а повтор submit безопасен.
     const budget = Math.max(5_000, Math.min(LONG_POLL_MS, proc.expireAt.getTime() - Date.now()));
@@ -242,20 +376,14 @@ export class SigexAdapter implements SignAdapter {
     try {
       r = await call<EgovSignResult>(signUrl, { method: "GET", timeoutMs: LONG_POLL_MS });
     } catch (e) {
-      if (e instanceof AuthRequiredError) return { status: "error", error: e.message, retryable: false };
-      if (e instanceof SigexError) {
-        const m = e.sigexMessage ?? "";
-        if (/expired|timeout/i.test(m)) return { status: "expired" };
-        if (/not active|not found/i.test(m)) return { status: "expired" }; // VERIFY: «не активна» после истечения/завершения
-        if (/Other endpoint connected/i.test(m)) return { status: "waiting" }; // другое соединение продолжает операцию
-        if (e.httpStatus === null) return { status: "waiting" }; // разрыв длинного соединения — опрашиваем снова
-        if (/eGov mobile data exchange failed/i.test(m)) return { status: "error", error: e.message, retryable: false };
-        return { status: "error", error: e.message, retryable: (e.httpStatus ?? 500) >= 500 || /rate limit|queue/i.test(m) };
-      }
-      return { status: "error", error: (e as Error).message, retryable: true };
+      return mapPollError(e);
     }
     if ((r.status ?? "").toUpperCase() === "CANCELED") return { status: "refused", reason: "Подписание отменено в приложении eGov" };
-    const data = r.documentsToSign?.[0]?.document?.file?.data;
+    const docs = r.documentsToSign ?? [];
+    // Подпись заключения — документ id 1 (порядок в ответе не гарантирован), вход — id 2.
+    const pdfEntry = docs.find((d) => String(d.id) === "1") ?? docs[0];
+    const authEntry = docs.find((d) => String(d.id) === "2");
+    const data = pdfEntry?.document?.file?.data;
     if (!data) return { status: "error", error: "SIGEX вернул ответ без подписи", retryable: false };
     let cms: Uint8Array;
     try {
@@ -265,10 +393,20 @@ export class SigexAdapter implements SignAdapter {
     }
     // Минимальная проверка формата: DER SEQUENCE (0x30). CMS_SIGN_ONLY не содержит данных документа.
     if (cms.byteLength < 64 || cms[0] !== 0x30) return { status: "error", error: "Ответ SIGEX не похож на CMS-подпись", retryable: false };
+    let authSignature: string | null = null;
+    const authData = authEntry?.document?.file?.data;
+    if (authData) {
+      try {
+        authSignature = b64(cmsBytesFrom(authData));
+      } catch {
+        authSignature = null; // подпись входа не обязательна — заключение подписано
+      }
+    }
     return {
       status: "signed",
       signature: {
         cms,
+        authSignature,
         signatureType: "cms",
         // Ответ поставщика без самой подписи и данных (подпись хранится отдельным неизменяемым объектом).
         providerResponse: { signMethod: r.signMethod ?? null, version: r.version ?? null, documents: (r.documentsToSign ?? []).map((d) => ({ id: d.id ?? null, mime: d.document?.file?.mime ?? null })) },
@@ -281,9 +419,10 @@ export class SigexAdapter implements SignAdapter {
    * POST /api (подпись) → documentId; POST /api/{id}/data (байты документа) — фиксация хешей.
    * Если второй шаг прервался, повтор вернёт "Document digests are already known" — это успех.
    */
-  async register(p: { documentName: string; documentBytes: Uint8Array; cms: Uint8Array; private: true }): Promise<{ registrationId: string; response: unknown }> {
+  async register(p: { documentName: string; documentBytes: Uint8Array; cms: Uint8Array; private: true; authCookie?: string | null }): Promise<{ registrationId: string; response: unknown }> {
     const reg = await call<{ documentId?: string; signId?: number }>(`${base()}/api`, {
       method: "POST",
+      cookie: p.authCookie,
       json: {
         title: p.documentName.slice(0, 200),
         description: "Заключение КЗППА РКА",
@@ -304,13 +443,13 @@ export class SigexAdapter implements SignAdapter {
       },
     });
     if (!reg.documentId) throw new SigexError("SIGEX не вернул documentId", 200, null, true);
-    const data = await this.finishData(reg.documentId, p.documentBytes);
+    const data = await this.finishData(reg.documentId, p.documentBytes, p.authCookie);
     return { registrationId: reg.documentId, response: { documentId: reg.documentId, signId: reg.signId ?? null, data } };
   }
 
-  private async finishData(documentId: string, bytes: Uint8Array) {
+  private async finishData(documentId: string, bytes: Uint8Array, cookie?: string | null) {
     try {
-      const r = await call<{ documentId?: string; signedDataSize?: number; digests?: Record<string, string>; dataArchived?: boolean; tempStorage?: boolean }>(`${base()}/api/${encodeURIComponent(documentId)}/data`, { method: "POST", body: bytes });
+      const r = await call<{ documentId?: string; signedDataSize?: number; digests?: Record<string, string>; dataArchived?: boolean; tempStorage?: boolean }>(`${base()}/api/${encodeURIComponent(documentId)}/data`, { method: "POST", body: bytes, cookie });
       return { signedDataSize: r.signedDataSize ?? null, digests: r.digests ?? null, dataArchived: r.dataArchived ?? null };
     } catch (e) {
       if (e instanceof SigexError && /Document digests are already known/i.test(e.sigexMessage ?? "")) return { alreadyKnown: true };
@@ -324,7 +463,7 @@ export class SigexAdapter implements SignAdapter {
    * «проверка доверия завершена» и «проверка недоступна». Полномочия подписанта (председатель)
    * сверяются платформой отдельно — здесь authorityConfirmed = null.
    */
-  async verify(p: { documentBytes: Uint8Array; cms: Uint8Array; registrationId?: string | null }): Promise<Verification> {
+  async verify(p: { documentBytes: Uint8Array; cms: Uint8Array; registrationId?: string | null; authCookie?: string | null }): Promise<Verification> {
     const checkedAt = new Date().toISOString();
     if (!p.registrationId) {
       // Проверка CMS без регистрации в документации SIGEX не описана.
@@ -332,8 +471,8 @@ export class SigexAdapter implements SignAdapter {
     }
     const id = encodeURIComponent(p.registrationId);
     try {
-      const v = await call<{ documentId?: string; dataArchived?: boolean; tempStorage?: boolean }>(`${base()}/api/${id}/verify`, { method: "POST", body: p.documentBytes });
-      const info = await call<{ signatures?: SigexSignature[]; signaturesTotal?: number; settings?: { private?: boolean } }>(`${base()}/api/${id}`, { method: "GET" });
+      const v = await call<{ documentId?: string; dataArchived?: boolean; tempStorage?: boolean }>(`${base()}/api/${id}/verify`, { method: "POST", body: p.documentBytes, cookie: p.authCookie });
+      const info = await call<{ signatures?: SigexSignature[]; signaturesTotal?: number; settings?: { private?: boolean } }>(`${base()}/api/${id}`, { method: "GET", cookie: p.authCookie });
       // Подпись, зарегистрированная нами, — первая (документ зарегистрирован с ней). VERIFY: порядок signatures.
       const s = info.signatures?.[0] ?? null;
       const cn = s?.subjectStructure?.flat().find((x) => x.oid === "2.5.4.3" || x.name === "CN")?.value ?? s?.subject?.match(/CN=([^,]+)/)?.[1] ?? null;
@@ -369,9 +508,9 @@ export class SigexAdapter implements SignAdapter {
    * Если регистрация найдена, но хеши не зафиксированы — догружаем данные (идемпотентно).
    * Поиск по хешу документа в API не описан; при неудаче возвращается null.
    */
-  async reconcile(p: { cms: Uint8Array; documentSha256: string }): Promise<{ registrationId: string } | null> {
+  async reconcile(p: { cms: Uint8Array; documentSha256: string; authCookie?: string | null }): Promise<{ registrationId: string } | null> {
     try {
-      const r = await call<{ documentId?: string; signId?: number }>(`${base()}/api/exported`, { method: "POST", json: { signType: "cms", signature: b64(p.cms) } });
+      const r = await call<{ documentId?: string; signId?: number }>(`${base()}/api/exported`, { method: "POST", json: { signType: "cms", signature: b64(p.cms) }, cookie: p.authCookie });
       return r.documentId ? { registrationId: r.documentId } : null;
     } catch (e) {
       if (e instanceof AuthRequiredError) throw e;
@@ -381,9 +520,9 @@ export class SigexAdapter implements SignAdapter {
   }
 
   /** Догрузить данные документа к найденной регистрации (после сверки). */
-  async ensureData(registrationId: string, documentBytes: Uint8Array) {
+  async ensureData(registrationId: string, documentBytes: Uint8Array, cookie?: string | null) {
     try {
-      return await this.finishData(registrationId, documentBytes);
+      return await this.finishData(registrationId, documentBytes, cookie);
     } catch (e) {
       if (e instanceof SigexError && /This signature has already been submitted/i.test(e.sigexMessage ?? "")) return { alreadyKnown: true };
       throw e;

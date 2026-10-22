@@ -36,7 +36,7 @@ async function continueDemo() {
   const { runSeed } = await import("@/server/seed");
   try {
     const r = await runSeed({ demo: true, budgetMs: 30_000 });
-    redirect(r.complete ? "/setup?done=1" : "/setup?step=1");
+    redirect(r.complete ? "/setup?done=1" : `/setup?step=${Date.now()}`);
   } catch (e) {
     if ((e as { digest?: string }).digest?.startsWith("NEXT_REDIRECT")) throw e;
     console.error("setup", e);
@@ -115,7 +115,7 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
               </ol>
               {!progress.demoComplete && (
                 <form action={continueDemo}>
-                  {autoRun && <AutoContinue />}
+                  {autoRun && <AutoContinue key={sp.step} />}
                   <Button className="w-full">{started ? "Продолжить заполнение" : "Заполнить демонстрационными данными"}</Button>
                   <p className="mt-2 text-[12.5px] text-ink-3">Заполнение идёт порциями и продолжается само; страницу не закрывайте.</p>
                 </form>

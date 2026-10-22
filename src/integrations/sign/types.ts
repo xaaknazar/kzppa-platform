@@ -13,13 +13,29 @@ export interface SignProcedure {
   dataUrl: string; // куда передать данные
   signUrl: string; // откуда получить подпись
   expireAt: Date;
+  /**
+   * Одноразовый nonce SIGEX /api/auth. Подписывается председателем в той же процедуре eGov,
+   * что и заключение: подпись nonce даёт платформе вход в SIGEX от имени председателя
+   * для регистрации подписи (SIGN-06) без mTLS и без хранения ключей. null — не получен.
+   */
+  authNonce?: string | null;
 }
 
 export interface ReceivedSignature {
   cms: Uint8Array; // CMS (detached) по точным байтам документа
   signatureType: "cms";
   providerResponse: unknown;
+  /** Подпись nonce входа (base64 DER CMS) — одноразовый токен, в журналы не пишется. */
+  authSignature?: string | null;
 }
+
+/** Результат опроса процедуры «только вход в SIGEX». */
+export type AuthPollResult =
+  | { status: "signed"; authSignature: string }
+  | { status: "waiting"; expireAt?: Date | null }
+  | { status: "expired" }
+  | { status: "refused"; reason?: string }
+  | { status: "error"; error: string; retryable: boolean };
 
 export type PollResult =
   | { status: "signed"; signature: ReceivedSignature }
@@ -46,10 +62,19 @@ export interface SignAdapter {
   /** Длинный опрос/повторы до получения результата. Вызывается фоновым процессом (SIGN-03). */
   poll(signUrl: string): Promise<PollResult>;
   /** Регистрация в SIGEX с явной приватностью (SIGN-06). Ошибка авторизации → AuthRequiredError. */
-  register(params: { documentName: string; documentBytes: Uint8Array; cms: Uint8Array; private: true }): Promise<{ registrationId: string; response: unknown }>;
-  verify(params: { documentBytes: Uint8Array; cms: Uint8Array; registrationId?: string | null }): Promise<Verification>;
+  register(params: { documentName: string; documentBytes: Uint8Array; cms: Uint8Array; private: true; authCookie?: string | null }): Promise<{ registrationId: string; response: unknown }>;
+  verify(params: { documentBytes: Uint8Array; cms: Uint8Array; registrationId?: string | null; authCookie?: string | null }): Promise<Verification>;
   /** SIGN-07: найти регистрацию по подписи/идентификатору после неопределённого результата. */
-  reconcile(params: { cms: Uint8Array; documentSha256: string }): Promise<{ registrationId: string } | null>;
+  reconcile(params: { cms: Uint8Array; documentSha256: string; authCookie?: string | null }): Promise<{ registrationId: string } | null>;
+  /**
+   * Вход в SIGEX по подписанному nonce. Возвращает значение сессии (cookie jwt), которое живёт
+   * только в памяти обработчика и никогда не сохраняется. Отказ → AuthRequiredError.
+   */
+  authenticate(nonce: string, signatureB64: string): Promise<{ cookie: string; userId: string | null }>;
+  /** Отдельная процедура eGov только для входа (продолжение после auth_required): новый nonce. */
+  startAuth(params: { description: string }): Promise<SignProcedure & { authNonce: string }>;
+  submitAuth(proc: SignProcedure & { authNonce: string }): Promise<{ signUrl: string; expireAt?: Date | null }>;
+  pollAuth(signUrl: string): Promise<AuthPollResult>;
 }
 
 export class AuthRequiredError extends Error {

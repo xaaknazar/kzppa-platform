@@ -2,7 +2,7 @@ import "server-only";
 import QRCode from "qrcode";
 import { env } from "@/server/env";
 import { sha256Hex } from "@/domain/hash";
-import type { PollResult, SignAdapter, SignProcedure, Verification } from "./types";
+import type { AuthPollResult, PollResult, SignAdapter, SignProcedure, Verification } from "./types";
 
 /**
  * ARCH-02, MIG-06. Тестовый адаптер подписи: имитирует сеанс eGov для тестовых сред.
@@ -68,6 +68,7 @@ export class DryRunSignAdapter implements SignAdapter {
       dataUrl: `dry-run:data/${procedureId}`,
       signUrl: `dry-run:sign/${procedureId}?sha=${p.documentSha256}`,
       expireAt,
+      authNonce: null, // тестовая регистрация не требует входа
     };
   }
 
@@ -131,5 +132,34 @@ export class DryRunSignAdapter implements SignAdapter {
 
   async reconcile(): Promise<{ registrationId: string } | null> {
     return null; // в тестовом режиме регистрация локальная — сверять не с чем
+  }
+
+  /** Тестовый вход: всегда успешен, cookie фиктивная (в тестовом режиме вход не требуется). */
+  async authenticate(): Promise<{ cookie: string; userId: string | null }> {
+    return { cookie: "dry-run", userId: null };
+  }
+
+  async startAuth(): Promise<SignProcedure & { authNonce: string }> {
+    const procedureId = crypto.randomUUID();
+    const mobileLink = `${env.appUrl}/dev/sign/${procedureId}`;
+    return {
+      procedureId,
+      qrCodeDataUrl: await QRCode.toDataURL(mobileLink, { errorCorrectionLevel: "M", margin: 2, width: 320 }),
+      mobileLink,
+      businessLink: null,
+      dataUrl: `dry-run:auth-data/${procedureId}`,
+      signUrl: `dry-run:auth/${procedureId}`,
+      expireAt: new Date(Date.now() + TTL_MS),
+      authNonce: "ZHJ5LXJ1bg==",
+    };
+  }
+
+  async submitAuth(proc: SignProcedure & { authNonce: string }): Promise<{ signUrl: string; expireAt?: Date | null }> {
+    return { signUrl: proc.signUrl, expireAt: proc.expireAt };
+  }
+
+  /** Тестовый вход подтверждается сразу. */
+  async pollAuth(): Promise<AuthPollResult> {
+    return { status: "signed", authSignature: "ZHJ5LXJ1bg==" };
   }
 }

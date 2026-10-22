@@ -22,7 +22,7 @@ import {
   updatePackageFilesAction,
   type ActionResult,
 } from "@/app/actions";
-import { resumeSigningAction, signingStatusAction, startSigningAction } from "./sign-actions";
+import { resumeSigningAction, signingStatusAction, startSigexAuthAction, startSigningAction } from "./sign-actions";
 import { Badge, Button, Field, Hash, Input, Notice, Section, Select, Textarea } from "@/components/ui";
 
 /* Общий помощник: выполнить действие, показать ошибку, обновить данные. */
@@ -425,7 +425,10 @@ export function PreparePdfPanel({ caseId, cycleId, version }: { caseId: string; 
 
 /* ───────── Личная ЭЦП (SIGN-01..04) ───────── */
 
-type SignStatus = { state: string; label?: string; qrCodeDataUrl?: string | null; mobileLink?: string | null; businessLink?: string | null; expireAt?: string | null; error?: string | null };
+type AuthStatus = { state: string; qrCodeDataUrl: string | null; mobileLink: string | null; businessLink: string | null; expireAt: string | null; error: string | null };
+type SignStatus = { state: string; label?: string; qrCodeDataUrl?: string | null; mobileLink?: string | null; businessLink?: string | null; expireAt?: string | null; error?: string | null; auth?: AuthStatus | null };
+
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" });
 
 export function SignPanel({ caseId, versionId, lastSession }: { caseId: string; versionId: string; lastSession: { id: string; state: string } | null }) {
   const router = useRouter();
@@ -504,7 +507,20 @@ export function SignPanel({ caseId, versionId, lastSession }: { caseId: string; 
                 </div>
               </>
             )}
-            {["auth_required", "needs_reconcile"].includes(status.state) && (
+            {status.state === "auth_required" && (
+              <SigexAuthStep
+                auth={status.auth ?? null}
+                pending={pending}
+                onStart={() =>
+                  run(async () => {
+                    const r = await startSigexAuthAction({ sessionId: session, caseId });
+                    if (r.ok) setStatus((prev) => (prev ? { ...prev, auth: r.data } : prev));
+                    return r;
+                  })
+                }
+              />
+            )}
+            {status.state === "needs_reconcile" && (
               <>
                 <p className="text-ink-2">Подпись уже получена и сохранена. Нужно завершить регистрацию и проверку у поставщика подписи, повторно подписывать не нужно.</p>
                 <Button variant="secondary" disabled={pending} onClick={() => run(() => resumeSigningAction({ sessionId: session, caseId }))}>Продолжить проверку</Button>
@@ -519,6 +535,37 @@ export function SignPanel({ caseId, versionId, lastSession }: { caseId: string; 
         </div>
       )}
     </Section>
+  );
+}
+
+/** Вход в SIGEX от имени председателя: временный QR eGov только для входа (SIGN-06). */
+function SigexAuthStep({ auth, pending, onStart }: { auth: AuthStatus | null; pending: boolean; onStart: () => void }) {
+  const active = !!auth && (auth.state === "created" || auth.state === "waiting");
+  const processing = !!auth && (auth.state === "signed" || auth.state === "used");
+  return (
+    <div className="space-y-3">
+      <p className="text-ink-2">Подпись уже сохранена. Отсканируйте QR, чтобы платформа зарегистрировала её в SIGEX от вашего имени. Повторно подписывать заключение не нужно.</p>
+      {active && auth?.qrCodeDataUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={auth.qrCodeDataUrl} alt="QR-код входа в SIGEX. Отсканируйте в приложении eGov Mobile." className="size-[180px] rounded-md border border-line bg-white p-2" />
+      )}
+      {active && (
+        <>
+          <p className="text-[13px] text-ink-3">Временный QR только для входа{auth?.expireAt ? `, действует до ${hhmm(auth.expireAt)}` : ""}.</p>
+          <div className="flex flex-wrap gap-2">
+            {auth?.mobileLink && <a className="rounded-md border border-line-strong px-3 py-1.5 text-petrol hover:bg-sunken" href={auth.mobileLink}>Открыть в eGov Mobile</a>}
+            {auth?.businessLink && <a className="rounded-md border border-line-strong px-3 py-1.5 text-petrol hover:bg-sunken" href={auth.businessLink}>Открыть в eGov Business</a>}
+          </div>
+        </>
+      )}
+      {processing && <p className="text-[13px] text-ink-2">Вход подтверждён. Платформа регистрирует и проверяет подпись.</p>}
+      {auth && ["expired", "refused", "error"].includes(auth.state) && (
+        <p className="text-[13px] text-bad">{auth.state === "expired" ? "Срок QR для входа истёк." : auth.state === "refused" ? "Вход отменён в eGov." : auth.error ?? "Вход не выполнен."} Запросите новый QR.</p>
+      )}
+      {!active && !processing && (
+        <Button variant="seal" disabled={pending} onClick={onStart}>{pending ? "Готовим QR…" : "Подтвердить вход в SIGEX"}</Button>
+      )}
+    </div>
   );
 }
 

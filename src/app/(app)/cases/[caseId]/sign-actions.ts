@@ -24,3 +24,11 @@ export async function resumeSigningAction(input: { sessionId: string; caseId: st
   revalidatePath(`/cases/${input.caseId}`);
   return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
 }
+
+/** Продолжение после auth_required: процедура eGov только для входа в SIGEX (подпись заключения уже сохранена). */
+export async function startSigexAuthAction(input: { sessionId: string; caseId: string }) {
+  const u = await requireUser();
+  const r = await signing.startSigexAuth(u, input.sessionId);
+  revalidatePath(`/cases/${input.caseId}`);
+  return r;
+}

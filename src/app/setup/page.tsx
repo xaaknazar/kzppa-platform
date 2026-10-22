@@ -7,7 +7,7 @@ import { safeEqual } from "@/server/crypto";
 import { createSession } from "@/server/auth";
 import { Button, Field, Input, Notice } from "@/components/ui";
 import { DEMO_STAGES, seedProgress } from "@/server/seed";
-import { AutoContinue } from "./auto-continue";
+import { SeedRunner } from "./auto-continue";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -28,20 +28,6 @@ async function hasAdmin() {
 function keyOk(form: FormData) {
   const key = String(form.get("key") ?? "");
   return !!env.cronSecret && safeEqual(key, env.cronSecret);
-}
-
-async function continueDemo() {
-  "use server";
-  if (!isDemoAuth()) redirect("/setup");
-  const { runSeed } = await import("@/server/seed");
-  try {
-    const r = await runSeed({ demo: true, budgetMs: 30_000 });
-    redirect(r.complete ? "/setup?done=1" : `/setup?step=${Date.now()}`);
-  } catch (e) {
-    if ((e as { digest?: string }).digest?.startsWith("NEXT_REDIRECT")) throw e;
-    console.error("setup", e);
-    redirect(`/setup?error=${encodeURIComponent(`Этап остановлен: ${(e as Error).message}`)}`);
-  }
 }
 
 async function resetDemo(form: FormData) {
@@ -71,7 +57,7 @@ async function initLive(form: FormData) {
   redirect("/admin/members");
 }
 
-export default async function SetupPage({ searchParams }: { searchParams: Promise<{ error?: string; step?: string; done?: string }> }) {
+export default async function SetupPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const sp = await searchParams;
   const demo = isDemoAuth();
   const progress = await seedProgress();
@@ -80,7 +66,6 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
 
   const [{ n: realCases }] = progress.org ? await db.select({ n: count() }).from(schema.cases).where(and(eq(schema.cases.organizationId, progress.org.id))) : [{ n: 0 }];
   const started = !!progress.org;
-  const autoRun = demo && !!sp.step && !progress.demoComplete && !sp.error;
 
   return (
     <main className="grid min-h-dvh place-items-center px-4 py-10">
@@ -102,24 +87,7 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
                   Платформа создаст организацию, состав из 30 участников и дела на разных этапах. Каждое дело проходит маршрут через настоящие сервисы платформы. Письма и подписи — тестовые, наружу ничего не уходит.
                 </p>
               )}
-              <ol className="space-y-1.5 text-[13.5px]">
-                {DEMO_STAGES.map((s) => {
-                  const done = progress.done.includes(s.key);
-                  return (
-                    <li key={s.key} className="flex items-center gap-2">
-                      <span aria-hidden className={done ? "text-ok" : "text-ink-4"}>{done ? "✓" : "○"}</span>
-                      <span className={done ? "text-ink" : "text-ink-3"}>{s.label}</span>
-                    </li>
-                  );
-                })}
-              </ol>
-              {!progress.demoComplete && (
-                <form action={continueDemo}>
-                  {autoRun && <AutoContinue key={sp.step} />}
-                  <Button className="w-full">{started ? "Продолжить заполнение" : "Заполнить демонстрационными данными"}</Button>
-                  <p className="mt-2 text-[12.5px] text-ink-3">Заполнение идёт порциями и продолжается само; страницу не закрывайте.</p>
-                </form>
-              )}
+              <SeedRunner stages={DEMO_STAGES.map((x) => ({ key: x.key, label: x.label }))} initialDone={progress.done} started={started} />
               {(started || realCases > 0) && (
                 <details className="border-t border-line pt-4">
                   <summary className="cursor-pointer text-[13px] text-ink-3 hover:text-petrol">Сбросить демо-базу</summary>

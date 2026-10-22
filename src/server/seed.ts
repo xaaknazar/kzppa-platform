@@ -567,9 +567,12 @@ export async function runSeed(opts: { demo: boolean; adminEmail?: string | null;
   await ensureHandlers();
   const ctx = await loadCtx(log, started + budget);
   ({ done } = await seedProgress());
+  let ran = 0;
   for (const st of DEMO_STAGES) {
     if (done.includes(st.key)) continue;
-    if (Date.now() - started > budget) return { logs, complete: false, done, next: st.key };
+    // Хотя бы один этап за вызов — прогресс гарантирован при любом бюджете.
+    if (ran > 0 && Date.now() - started > budget) return { logs, complete: false, done, next: st.key };
+    ran++;
     const t0 = Date.now();
     const finished = await STAGES[st.key](ctx);
     if (finished === false) {

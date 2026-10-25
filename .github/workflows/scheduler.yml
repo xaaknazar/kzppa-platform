@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   tick:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 4
     steps:
       - name: Синхронизация почты и фоновые операции
@@ -21,7 +21,8 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_URL: ${{ vars.APP_URL || 'https://kzppa-platform.vercel.app' }}
         run: |
-          if [ -z "$CRON_SECRET" ]; then echo "::error::Не задан секрет CRON_SECRET"; exit 1; fi
+          # Без секрета задание пропускается, не падая (иначе GitHub шлёт письмо о сбое каждый час).
+          if [ -z "$CRON_SECRET" ]; then echo "::notice::Секрет CRON_SECRET не задан — пропуск"; exit 0; fi
           for path in api/cron/mail-sync api/cron/outbox; do
             code=$(curl -sS --max-time 70 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/$path")
             echo "$path → $code"

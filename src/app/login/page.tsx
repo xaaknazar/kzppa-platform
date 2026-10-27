@@ -2,7 +2,7 @@ import { asc, count, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db, schema } from "@/db/client";
 import { Emblem } from "@/components/shell";
-import { getSessionUser, ROLE_LABEL } from "@/server/auth";
+import { getSessionUser, ROLE_LABEL, safeNext } from "@/server/auth";
 import { env, isDemoAuth } from "@/server/env";
 import { OtpLogin } from "./otp-login";
 import { seedProgress } from "@/server/seed";
@@ -11,8 +11,10 @@ import { EmailLogin } from "./email-login";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Вход" };
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  if (await getSessionUser()) redirect("/");
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; next?: string }> }) {
+  const sp0 = await searchParams;
+  const next = safeNext(sp0.next) ? sp0.next : "/";
+  if (await getSessionUser()) redirect(next);
   const [{ n: orgCount }] = await db.select({ n: count() }).from(schema.organizations);
   if (orgCount === 0) redirect("/setup");
   if (isDemoAuth() && !(await seedProgress()).demoComplete) redirect("/setup");
@@ -69,7 +71,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           ) : env.authMode === "supabase" ? (
             <OtpLogin supabaseUrl={env.supabaseUrl} anonKey={env.supabaseAnonKey} />
           ) : (
-            <EmailLogin sender={sender} />
+            <EmailLogin sender={sender} next={next} />
           )}
         </div>
         <p className="mt-6 text-[12.5px] text-ink-3">Вход доступен только участникам с подтверждённым адресом в составе комиссии. Ссылка на дело без входа не открывает материалы.</p>

@@ -7,6 +7,7 @@ import { formatBase, formatOutgoing } from "@/domain/numbering";
 import { qrManifestHash, sha256Hex, type QrManifest } from "@/domain/hash";
 import type { DocVersionState, VoteChoice } from "@/domain/types";
 import { audit } from "../audit";
+import { enqueue } from "../outbox";
 import { CommandError, expectVersion, runCommand } from "../command";
 import { putImmutable, readBlob } from "../storage";
 import type { SessionUser } from "../auth";
@@ -104,7 +105,11 @@ export async function openVoting(user: SessionUser, input: { cycleId: string; cl
     // Пакетно: доступ к папке обсуждения и персональные приглашения (FLOW-05, FLOW-13).
     await tx.insert(schema.caseMembers).values(members.map((m) => ({ organizationId: orgId, caseId: kase.id, userId: m.id, role: "voter", cycleId: cycle.id, grantedBy: user.id })));
     const invitations = await Promise.all(members.map(async (m) => ({ organizationId: orgId, cycleId: cycle.id, memberId: m.id, token: (await sha256Hex(`${cycle.id}:${m.id}:${crypto.randomUUID()}`)).slice(0, 40), deliveryState: "pending" })));
-    await tx.insert(schema.voteInvitations).values(invitations).onConflictDoNothing();
+    const created = await tx.insert(schema.voteInvitations).values(invitations).onConflictDoNothing().returning({ id: schema.voteInvitations.id });
+    // FLOW-05: персональные письма-приглашения уходят с почты комиссии через outbox (повторы, без дублей).
+    for (const inv of created) {
+      await enqueue(tx, { orgId, type: "vote.invite", aggregateType: "cycle", aggregateId: cycle.id, payload: { invitationId: inv.id }, idempotencyKey: `vote.invite:${inv.id}` });
+    }
     // Документ обсуждения доступен членам только на чтение.
     const draftDoc = await tx.query.documents.findFirst({ where: eq(schema.documents.id, draft!.documentId) });
     if (draftDoc) await tx.update(schema.documents).set({ area: "discussion", cycleId: cycle.id }).where(eq(schema.documents.id, draftDoc.id));

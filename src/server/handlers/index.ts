@@ -17,6 +17,12 @@ export function ensureHandlers() {
       console.warn("Обработчики почты не загружены:", (e as Error).message);
     }
     try {
+      const v = await import("./votes");
+      v.registerVoteHandlers();
+    } catch (e) {
+      console.warn("Обработчики приглашений не загружены:", (e as Error).message);
+    }
+    try {
       const s = await import("../services/signing");
       s.registerSignHandlers();
     } catch (e) {

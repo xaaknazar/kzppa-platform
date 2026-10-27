@@ -2,6 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, isChair } from "@/server/auth";
 import { caseDetail } from "@/server/queries";
+import { eq } from "drizzle-orm";
+import { db, schema } from "@/db/client";
+import { can } from "@/domain/acl";
 import { computeRoute } from "@/server/route";
 import { RouteRail } from "@/components/route-rail";
 import { Badge, Empty, Hash, KV, Notice, PageHeader, Section, Tabs, fmtDate, fmtSize, type Tone } from "@/components/ui";
@@ -28,6 +31,7 @@ import {
 } from "./panels";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60; // приглашения к голосованию отправляются после ответа (after)
 
 const TABS = [
   { key: "overview", label: "Обзор" },
@@ -65,6 +69,10 @@ export default async function CasePage({ params, searchParams }: { params: Promi
   const name = (id?: string | null) => d.users.find((x) => x.id === id)?.fullName ?? "—";
   const executors = d.users.filter((x) => x.status === "active");
   const base = `/cases/${caseId}${sp.cycle ? `?cycle=${sp.cycle}` : ""}`;
+  // FLOW-13: приглашение, доставка и открытие ссылки — отдельные от голоса события.
+  const canSeeRoot = can(u.principal, "case.read_root", { caseId: kase.id });
+  const invRows = canSeeRoot ? await db.select({ sentAt: schema.voteInvitations.sentAt, openedAt: schema.voteInvitations.openedAt, deliveryState: schema.voteInvitations.deliveryState }).from(schema.voteInvitations).where(eq(schema.voteInvitations.cycleId, cycle.id)) : [];
+  const inv = { total: invRows.length, sent: invRows.filter((r) => r.sentAt).length, opened: invRows.filter((r) => r.openedAt).length, pending: invRows.filter((r) => r.deliveryState === "pending").length };
   const cycleDocs = d.documents.filter((x) => x.d.cycleId === cycle.id || (x.d.cycleId === null && d.cycles.length === 1));
   const drafts = cycleDocs.filter((x) => x.d.category === "draft");
   const card = d.cards.find((c) => c.cycleId === cycle.id);
@@ -288,6 +296,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
                   ["Голосование открыто", fmtDate(cycle.openedAt, true)],
                   ["Окончание", fmtDate(cycle.closesAt, true)],
                   ["Закрыто", fmtDate(cycle.closedAt, true)],
+                  ["Приглашения", inv.total ? `Отправлено ${inv.sent} из ${inv.total}, открыли ${inv.opened}${inv.pending ? `, в очереди ${inv.pending}` : ""}` : null],
                   ["Проект на голосовании", <Hash key="d" value={(cycle.frozenManifest as { draft?: { sha256?: string } } | null)?.draft?.sha256 ?? null} />],
                   ["Хеш протокола", <Hash key="p" value={cycle.protocolHash} />],
                 ]}

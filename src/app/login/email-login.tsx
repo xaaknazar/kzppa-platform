@@ -4,7 +4,7 @@ import { Button, Field, Input } from "@/components/ui";
 import { adminKeyLoginAction, requestCodeAction, verifyCodeAction } from "./actions";
 
 /** Вход по коду, который приходит с почты комиссии; аварийный вход администратора по ключу. */
-export function EmailLogin({ sender }: { sender: string }) {
+export function EmailLogin({ sender, next = "/" }: { sender: string; next?: string }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [key, setKey] = useState("");
@@ -26,7 +26,7 @@ export function EmailLogin({ sender }: { sender: string }) {
 
   if (step === "key")
     return (
-      <form onSubmit={(e) => { e.preventDefault(); go(() => adminKeyLoginAction(email, key), () => (window.location.href = "/")); }} className="mt-4 space-y-4">
+      <form onSubmit={(e) => { e.preventDefault(); go(() => adminKeyLoginAction(email, key), () => (window.location.href = next)); }} className="mt-4 space-y-4">
         <p className="text-[13.5px] text-ink-2">Аварийный вход технического администратора, если почта комиссии ещё не подключена.</p>
         <Field label="Адрес администратора"><Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
         <Field label="Ключ развёртывания" hint="Значение CRON_SECRET из настроек Vercel"><Input type="password" required value={key} onChange={(e) => setKey(e.target.value)} /></Field>
@@ -46,7 +46,7 @@ export function EmailLogin({ sender }: { sender: string }) {
       <button type="button" onClick={() => { setStep("key"); setError(null); }} className="w-full text-[12.5px] text-ink-3 hover:text-petrol">Вход администратора по ключу</button>
     </form>
   ) : (
-    <form onSubmit={(e) => { e.preventDefault(); go(() => verifyCodeAction(email, code), () => (window.location.href = "/")); }} className="mt-4 space-y-4">
+    <form onSubmit={(e) => { e.preventDefault(); go(() => verifyCodeAction(email, code), () => (window.location.href = next)); }} className="mt-4 space-y-4">
       <p className="text-[13.5px] text-ink-2">Если адрес есть в составе комиссии, на {email} придёт письмо от {sender} с кодом. Код действует 10 минут.</p>
       <Field label="Код из письма">
         <Input inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} maxLength={6} className="tracking-[0.3em] tnum" />

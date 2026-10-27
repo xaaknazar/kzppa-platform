@@ -5,8 +5,11 @@ import { createServerClient } from "@supabase/ssr";
 export async function middleware(req: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-  const res = NextResponse.next({ request: req });
-  if (!url || !key || process.env.AUTH_MODE === "demo") return res;
+  // Путь запроса — чтобы после входа вернуть участника на ту же страницу (ссылка из письма).
+  const headers = new Headers(req.headers);
+  headers.set("x-kzppa-path", req.nextUrl.pathname + req.nextUrl.search);
+  const res = NextResponse.next({ request: { headers } });
+  if (!url || !key || process.env.AUTH_MODE !== "supabase") return res;
   const supa = createServerClient(url, key, {
     cookies: {
       getAll: () => req.cookies.getAll(),

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { requireUser } from "@/server/auth";
 import * as cases from "@/server/services/cases";
 import * as asg from "@/server/services/assignments";
@@ -79,7 +80,10 @@ export async function preapproveAction(input: Parameters<typeof cyc.preapproveDr
 
 export async function openVotingAction(input: Parameters<typeof cyc.openVoting>[1] & { caseId: string }) {
   const u = await requireUser();
-  return done(await cyc.openVoting(u, input), `/cases/${input.caseId}`, "/votes");
+  const r = await cyc.openVoting(u, input);
+  // Приглашения отправляются сразу после ответа; что не успело — дошлёт cron outbox.
+  if (r.ok) after(async () => void (await (await import("@/server/handlers")).kick({ types: ["vote.invite"], aggregateId: input.cycleId, limit: 40 })));
+  return done(r, `/cases/${input.caseId}`, "/votes");
 }
 
 export async function castVoteAction(input: { cycleId: string; choice: VoteChoice; comment?: string; specialOpinion?: string; idempotencyKey: string }) {

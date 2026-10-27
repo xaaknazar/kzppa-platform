@@ -122,7 +122,11 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 
 export async function requireUser(): Promise<SessionUser> {
   const u = await getSessionUser();
-  if (!u) redirect("/login");
+  if (!u) {
+    const { headers } = await import("next/headers");
+    const path = (await headers()).get("x-kzppa-path") ?? "";
+    redirect(safeNext(path) ? `/login?next=${encodeURIComponent(path)}` : "/login");
+  }
   return u;
 }
 
@@ -138,3 +142,8 @@ export const ROLE_LABEL: Record<OrgRole, string> = {
   outgoing_registrar: "Регистратор исходящих",
   tech_admin: "Технический администратор",
 };
+
+/** Возврат после входа только на внутренние страницы платформы (без открытого редиректа). */
+export function safeNext(p: string | null | undefined): p is string {
+  return !!p && p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\") && !p.startsWith("/login") && p !== "/";
+}

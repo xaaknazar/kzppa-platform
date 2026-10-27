@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { and, eq, isNull } from "drizzle-orm";
+import { db, schema } from "@/db/client";
 import { requireUser } from "@/server/auth";
 import { discussion } from "@/server/queries";
 import { can } from "@/domain/acl";
@@ -40,6 +42,12 @@ export default async function VotePage({ params }: { params: Promise<{ cycleId: 
   }
 
   const { cycle, kase, docs, myVote, votedCount, composition } = d;
+  // FLOW-13: открытие ссылки — отдельное событие (не голос). Фиксируется только первое открытие самим участником.
+  await db
+    .update(schema.voteInvitations)
+    .set({ openedAt: new Date() })
+    .where(and(eq(schema.voteInvitations.cycleId, cycle.id), eq(schema.voteInvitations.memberId, u.id), isNull(schema.voteInvitations.openedAt)))
+    .catch(() => undefined);
   const manifest = cycle.frozenManifest as { draft: { versionId: string; sha256: string; filename: string }; materials: string[] } | null;
   const draft = manifest ? docs.find((x) => x.v.id === manifest.draft.versionId) : undefined;
   const materials = manifest ? docs.filter((x) => manifest.materials.includes(x.v.id)) : [];

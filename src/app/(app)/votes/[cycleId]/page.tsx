@@ -68,7 +68,7 @@ export default async function VotePage({ params }: { params: Promise<{ cycleId: 
         }
         lead={
           <>
-            Обращение адвоката <span className="font-serif text-ink">{kase.applicant}</span>.{" "}
+            Обращение адвоката <span className="font-serif text-ink">{kase.applicant.replace(/\.+$/, "")}</span>.{" "}
             {cycle.supplementary ? "Дополнительное рассмотрение" : `Рассмотрение, цикл ${cycle.number}`}.
           </>
         }

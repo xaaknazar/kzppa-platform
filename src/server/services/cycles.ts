@@ -1,12 +1,12 @@
 import "server-only";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, lte, sql } from "drizzle-orm";
 import { db, schema, type Tx } from "@/db/client";
 import { tally, type DecisionRule, type QuorumRule, OUTCOME_LABEL } from "@/domain/quorum";
 import { assertTransition, CASE, DOC_VERSION } from "@/domain/states";
 import { formatBase, formatOutgoing } from "@/domain/numbering";
 import { qrManifestHash, sha256Hex, type QrManifest } from "@/domain/hash";
 import type { DocVersionState, VoteChoice } from "@/domain/types";
-import { audit } from "../audit";
+import { audit, SERVICE_ACTOR, type Actor } from "../audit";
 import { enqueue } from "../outbox";
 import { CommandError, expectVersion, runCommand } from "../command";
 import { putImmutable, readBlob } from "../storage";
@@ -40,6 +40,14 @@ async function setVersionState(tx: Tx, versionId: string, to: DocVersionState) {
 }
 
 /** FLOW-04: обязательная предварительная проверка проекта председателем до обсуждения (AF). */
+/** Задача «поступил проект» закрывается решением председателя по проекту. */
+async function resolveDraftTasks(tx: Tx, caseId: string, userId: string) {
+  await tx
+    .update(schema.tasks)
+    .set({ state: "done", resolvedAt: new Date(), resolvedBy: userId })
+    .where(and(eq(schema.tasks.caseId, caseId), eq(schema.tasks.kind, "draft_review"), eq(schema.tasks.state, "open")));
+}
+
 export async function preapproveDraft(user: SessionUser, input: { cycleId: string; draftVersionId: string; decision: "approve" | "rework"; remarks?: string; expectedVersion: number }) {
   const c0 = await db.query.cycles.findFirst({ where: eq(schema.cycles.id, input.cycleId) });
   return runCommand({ name: "draft.preapprove", user, permission: { action: "draft.preapprove", caseId: c0?.caseId } }, async ({ tx, actor, orgId }) => {
@@ -55,12 +63,14 @@ export async function preapproveDraft(user: SessionUser, input: { cycleId: strin
       const asg = await tx.query.assignments.findFirst({ where: and(eq(schema.assignments.caseId, kase.id), eq(schema.assignments.state, "draft_submitted")) });
       if (asg) await tx.update(schema.assignments).set({ state: "on_rework", version: asg.version + 1 }).where(eq(schema.assignments.id, asg.id));
       await audit(tx, { orgId, actor, action: "draft.preapprove_rework", objectType: "document_version", objectId: v.id, caseId: kase.id, basis: input.remarks });
+      await resolveDraftTasks(tx, kase.id, user.id);
       return { state: cycle.state };
     }
     if (v.state === "working") await setVersionState(tx, v.id, "on_approval");
     await tx.update(schema.cycles).set({ state: "preapproved", draftVersionId: v.id, preapprovedBy: user.id, preapprovedAt: new Date(), version: cycle.version + 1 }).where(eq(schema.cycles.id, cycle.id));
     if (kase.state === "assigned") await tx.update(schema.cases).set({ state: "in_progress" }).where(eq(schema.cases.id, kase.id));
     await audit(tx, { orgId, actor, action: "draft.preapprove", objectType: "document_version", objectId: v.id, caseId: kase.id, after: { sha256: v.sha256 } });
+    await resolveDraftTasks(tx, kase.id, user.id);
     return { state: "preapproved" };
   });
 }
@@ -144,9 +154,41 @@ export async function castVote(user: SessionUser, input: { cycleId: string; choi
 export async function closeVoting(user: SessionUser, input: { cycleId: string; earlyBasis?: string; expectedVersion: number }) {
   const c0 = await db.query.cycles.findFirst({ where: eq(schema.cycles.id, input.cycleId) });
   return runCommand({ name: "cycle.close_vote", user, permission: { action: "cycle.open_vote", caseId: c0?.caseId } }, async ({ tx, actor, orgId }) => {
-    const { cycle, kase } = await loadCycle(tx, input.cycleId, orgId);
+    const { cycle } = await loadCycle(tx, input.cycleId, orgId);
     expectVersion(cycle.version, input.expectedVersion);
-    if (cycle.state !== "voting") throw new CommandError("Голосование не открыто");
+    return closeVotingTx(tx, actor, orgId, input.cycleId, input.earlyBasis);
+  });
+}
+
+/**
+ * FLOW-07: по окончании срока голосование закрывается платформой и протокол формируется
+ * автоматически (вызывается из cron). Досрочное закрытие — только председателем с основанием.
+ */
+export async function closeExpiredVotings(): Promise<{ cycleId: string; outcome?: string; error?: string }[]> {
+  const due = await db
+    .select({ id: schema.cycles.id, orgId: schema.cycles.organizationId })
+    .from(schema.cycles)
+    .where(and(eq(schema.cycles.state, "voting"), lte(schema.cycles.closesAt, new Date())));
+  const out: { cycleId: string; outcome?: string; error?: string }[] = [];
+  for (const c of due) {
+    try {
+      const r = await db.transaction((tx) => closeVotingTx(tx, { ...SERVICE_ACTOR, label: "Платформа (истёк срок голосования)" }, c.orgId, c.id));
+      out.push({ cycleId: c.id, outcome: r.outcome });
+    } catch (e) {
+      out.push({ cycleId: c.id, error: (e as Error).message });
+    }
+  }
+  return out;
+}
+
+async function closeVotingTx(tx: Tx, actor: Actor, orgId: string, cycleId: string, earlyBasis?: string) {
+  {
+    const input = { earlyBasis };
+    const { cycle, kase } = await loadCycle(tx, cycleId, orgId);
+    // Блокировка строки цикла: ручное и автоматическое закрытие не выполнятся дважды.
+    await tx.execute(sql`select 1 from cycles where id = ${cycle.id} for update`);
+    const fresh = await tx.query.cycles.findFirst({ where: eq(schema.cycles.id, cycle.id) });
+    if (fresh?.state !== "voting") throw new CommandError("Голосование не открыто");
     const early = !!cycle.closesAt && cycle.closesAt.getTime() > Date.now();
     if (early && (!input.earlyBasis || input.earlyBasis.trim().length < 5)) throw new CommandError("Досрочное закрытие требует основания");
     const snap = (cycle.eligibleSnapshot as { userId: string; fullName: string }[]) ?? [];
@@ -178,7 +220,9 @@ export async function closeVoting(user: SessionUser, input: { cycleId: string; e
       openedAt: cycle.openedAt!,
       closedAt,
       eligible: snap.map((s) => ({ fullName: s.fullName })),
-      votes: votes.map((v) => ({ fullName: name.get(v.memberId) ?? v.memberId, choice: v.choice as VoteChoice, comment: v.comment, specialOpinion: v.specialOpinion })),
+      votes: votes
+        .map((v) => ({ fullName: name.get(v.memberId) ?? v.memberId, choice: v.choice as VoteChoice, comment: v.comment, specialOpinion: v.specialOpinion }))
+        .sort((a, b) => a.fullName.localeCompare(b.fullName, "ru")),
       notParticipated: snap.filter((s) => !votes.some((v) => v.memberId === s.userId)).map((s) => ({ fullName: s.fullName })),
       tally: t,
     } as Parameters<typeof buildProtocolPdf>[0]);
@@ -192,7 +236,7 @@ export async function closeVoting(user: SessionUser, input: { cycleId: string; e
     // Доступ голосовавших к папке обсуждения закрытого цикла — по политике (DEC-03); пока оставляем чтение.
     await audit(tx, { orgId, actor, action: "cycle.close_vote", objectType: "cycle", objectId: cycle.id, caseId: kase.id, after: { tally: t, protocolHash: blob.sha256 }, basis: early ? input.earlyBasis : null });
     return { outcome: t.outcome, label: OUTCOME_LABEL[t.outcome] };
-  });
+  }
 }
 
 /**
@@ -242,6 +286,7 @@ export async function approveFinal(user: SessionUser, input: { cycleId: string; 
     if (v && ["working", "on_approval"].includes(v.state)) await setVersionState(tx, v.id, "approved");
     if (["review", "rework", "in_progress"].includes(kase.state)) await tx.update(schema.cases).set({ state: "approved", resultCode: "accepted", resultAt: new Date(), updatedAt: new Date() }).where(eq(schema.cases.id, kase.id));
     await audit(tx, { orgId, actor, action: "conclusion.approve", objectType: "document_version", objectId: input.versionId, caseId: kase.id, after: { conclusionNumber }, basis: input.conformityNote ?? null });
+    await resolveDraftTasks(tx, kase.id, user.id);
     return { conclusionNumber };
   });
 }
@@ -274,7 +319,7 @@ export async function prepareSignablePdf(user: SessionUser, input: { cycleId: st
       .returning();
     const [ver] = await tx
       .insert(schema.documentVersions)
-      .values({ organizationId: orgId, documentId: convDoc.id, version: 1, state: "working", format: "pdf", filename: `conclusion-${(cycle.conclusionNumber ?? "").replace("/", "-")}.pdf`, createdFrom: source.id, authorId: user.id })
+      .values({ organizationId: orgId, documentId: convDoc.id, version: 1, state: "working", format: "pdf", filename: `Заключение №${(cycle.conclusionNumber ?? "").replace(/\//g, "-")}.pdf`, createdFrom: source.id, authorId: user.id })
       .returning();
     const manifest: QrManifest = {
       caseId: kase.id,

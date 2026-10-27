@@ -127,7 +127,7 @@ export async function prepareRkaPackage(user: SessionUser, input: { cycleId: str
     const docx = await buildCoverLetterDocx(lang, coverData);
     const coverBlob = await putImmutable(orgId, docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", undefined, tx);
     const [coverDoc] = await tx.insert(schema.documents).values({ organizationId: orgId, caseId: kase.id, cycleId: cycle.id, category: "outgoing", title: `Сопроводительное письмо исх. №${numberDisplay}`, lang, area: "root" }).returning();
-    const coverFile = `cover-${numberDisplay.replace(/\//g, "-")}.docx`;
+    const coverFile = `${lang === "kk" ? "Ілеспе хат" : "Сопроводительное письмо"} исх. №${numberDisplay.replace(/\//g, "-")}.docx`;
     const [coverVer] = await tx.insert(schema.documentVersions).values({ organizationId: orgId, documentId: coverDoc.id, version: 1, state: "approved", blobId: coverBlob.id, sha256: coverBlob.sha256, size: coverBlob.size, format: "docx", filename: coverFile, authorId: user.id, generator: { kind: "cover_letter", lang } }).returning();
 
     const manifest: ManifestEntry[] = [

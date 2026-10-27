@@ -44,8 +44,11 @@ import {
  * постраничного обхода, попадут в журнал изменений (дубли исключает уникальный ключ).
  */
 
-const API = "https://gmail.googleapis.com/gmail/v1/users/me";
-const UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
+// Адрес API переопределяется только для локального сквозного теста с имитацией Gmail
+// (KZPPA_TEST_GMAIL_ORIGIN); в боевой среде переменная не задаётся.
+const GMAIL_ORIGIN = process.env.KZPPA_TEST_GMAIL_ORIGIN || "https://gmail.googleapis.com";
+const API = `${GMAIL_ORIGIN}/gmail/v1/users/me`;
+const UPLOAD = `${GMAIL_ORIGIN}/upload/gmail/v1/users/me`;
 
 export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -59,7 +62,7 @@ export const OAUTH_STATE_PURPOSE = "gmail-oauth-state";
 export const OAUTH_STATE_TTL_SEC = 10 * 60;
 export const OAUTH_CALLBACK_PATH = "/api/integrations/gmail/callback";
 export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+export const GOOGLE_TOKEN_URL = process.env.KZPPA_TEST_GMAIL_ORIGIN ? `${process.env.KZPPA_TEST_GMAIL_ORIGIN}/token` : "https://oauth2.googleapis.com/token";
 
 export const MAX_MESSAGE_BYTES = 25 * 1024 * 1024; // лимит хранения исходного EML и вложения
 const INITIAL_PAGE_SIZE = 50;

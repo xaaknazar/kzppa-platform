@@ -266,7 +266,7 @@ async function ensureProcedure(sessionId: string): Promise<Session> {
   const card = await db.query.qrCards.findFirst({ where: eq(schema.qrCards.documentVersionId, s.documentVersionId) });
   const m = (card?.manifest ?? {}) as Partial<QrManifest>;
   const v = await db.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, s.documentVersionId) });
-  const documentName = v?.filename ?? `conclusion-${m.conclusionNumber ?? ""}.pdf`;
+  const documentName = v?.filename ?? `Заключение №${m.conclusionNumber ?? ""}.pdf`;
   const description = `${m.supplementary ? "Дополнительное заключение" : "Заключение"} КЗППА №${m.conclusionNumber ?? "—"} по делу №${m.caseNumber ?? "—"} (${m.applicant ?? ""}). SHA-256: ${s.documentSha256.slice(0, 16)}…`;
   const adapter = getSignAdapter();
   let proc: SignProcedure;

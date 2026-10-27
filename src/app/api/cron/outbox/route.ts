@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { env } from "@/server/env";
 import { ensureHandlers } from "@/server/handlers";
 import { processOutbox } from "@/server/outbox";
+import { closeExpiredVotings } from "@/server/services/cycles";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -13,11 +14,13 @@ export async function GET(req: Request) {
   }
   await ensureHandlers();
   const started = Date.now();
+  // FLOW-07: истёкшие голосования закрываются, протокол формируется автоматически.
+  const closed = await closeExpiredVotings().catch((e) => [{ cycleId: "-", error: (e as Error).message }]);
   const all: Awaited<ReturnType<typeof processOutbox>> = [];
-  while (Date.now() - started < 45_000) {
+  while (Date.now() - started < 40_000) {
     const r = await processOutbox({ limit: 10 });
     all.push(...r);
     if (r.length === 0) break;
   }
-  return NextResponse.json({ processed: all.length, results: all.map((r) => ({ type: r.type, status: r.status })) });
+  return NextResponse.json({ processed: all.length, results: all.map((r) => ({ type: r.type, status: r.status })), votingsClosed: closed });
 }

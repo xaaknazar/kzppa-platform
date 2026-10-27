@@ -7,6 +7,11 @@
 import type { Lang } from "./types";
 
 /** Обращение по отчеству: «-овна/-евна/-ична/-кызы» — «Уважаемая», «-ович/-евич/-ич/-улы» — «Уважаемый». */
+/** «Комиссия по защите …» → «Комиссии по защите …» для подписи «Председатель …». */
+export function genitiveRu(name: string) {
+  return name.replace(/^([Кк])омиссия(?=\s|$)/, "$1омиссии");
+}
+
 export function salutationRu(patronymic: string | null | undefined) {
   const p = (patronymic ?? "").trim().toLowerCase();
   if (/(вна|чна|кызы|қызы)$/.test(p)) return "Уважаемая";
@@ -53,13 +58,13 @@ export function assignmentLetter(lang: Lang, d: AssignmentTemplateData): { subje
         ]
       : [
           `${salutationRu(d.addressee.patronymic)} ${name}!`,
-          `Республиканская коллегия адвокатов письмом №${d.rkaNumber} от ${d.rkaDate} направила в Комиссию обращение адвоката (поступило ${d.receivedAt}). Заявитель — ${d.applicant}. Номер дела в Комиссии — №${d.caseNumber}.`,
+          `Республиканская коллегия адвокатов письмом №${d.rkaNumber} от ${d.rkaDate} направила в Комиссию обращение адвоката (поступило ${d.receivedAt}). Заявитель — ${d.applicant.replace(/\.+$/, "")}. Номер дела в Комиссии — №${d.caseNumber}.`,
           `Обстоятельства: ${d.summary}`,
           `Вам поручается: ${d.subject}. Прошу изучить материалы и подготовить проект заключения.`,
           `Срок — до ${d.deadline}.`,
           `Материалы электронного дела: ${d.workspaceLink}`,
           `Проект заключения направьте ответным письмом на ${d.replyTo}. Прошу подтвердить получение поручения.`,
-          `С уважением,\nПредседатель ${d.commissionName}\n${d.chairFullName}`,
+          `С уважением,\nПредседатель ${genitiveRu(d.commissionName)}\n${d.chairFullName}`,
         ];
 
   const text = paragraphs.join("\n\n");
@@ -108,12 +113,12 @@ export function coverLetter(lang: Lang, d: CoverLetterData) {
   const attachLines = d.attachments.map(
     (a, i) => `${i + 1}. ${a.name}${a.pages ? (isKk ? `, ${a.pages} п.` : `, на ${a.pages} л.`) : ""}`,
   );
-  const sign = isKk ? `${d.commissionName} төрағасы` : `Председатель ${d.commissionName}`;
+  const sign = isKk ? `${d.commissionName} төрағасы` : `Председатель ${genitiveRu(d.commissionName)}`;
   const subject = isKk
     ? `КЗППА: №${d.caseNumber} іс бойынша қорытынды — ${d.applicant} (шығ. №${d.outgoingNumber})`
     : `КЗППА: заключение по делу №${d.caseNumber} — ${d.applicant} (исх. №${d.outgoingNumber})`;
   const emailBody = isKk
-    ? `Құрметті әріптестер!\n\n${ref} жауап ретінде №${d.caseNumber} іс бойынша қорытынды мен ілеспе хат жолданады.\n\nҚосымшалар: ${d.attachments.length}.\n\nҚұрметпен,\n${sign}\n${d.chairFullName}`
-    : `Уважаемые коллеги!\n\n${ref} направляем заключение по делу №${d.caseNumber} и сопроводительное письмо.\n\nПриложений: ${d.attachments.length}.\n\nС уважением,\n${sign}\n${d.chairFullName}`;
+    ? `Құрметті әріптестер!\n\n${ref} жауап ретінде №${d.caseNumber} іс бойынша қорытынды жолданады.\n\nТіркелген файлдар: ілеспе хат және оның қосымшалары, барлығы — ${d.attachments.length + 1}.\n\nҚұрметпен,\n${sign}\n${d.chairFullName}`
+    : `Уважаемые коллеги!\n\n${ref} направляем заключение по делу №${d.caseNumber} (заявитель — ${d.applicant}).\n\nВо вложении: сопроводительное письмо и приложения к нему, всего файлов — ${d.attachments.length + 1}.\n\nС уважением,\n${sign}\n${d.chairFullName}`;
   return { title, ref, addressee: d.addressee, body, attachHeader, attachLines, sign, chair: d.chairFullName, subject, emailBody };
 }

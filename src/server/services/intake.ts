@@ -23,6 +23,10 @@ import { putImmutable } from "../storage";
 
 const ATTACHMENT_LIMIT = MAX_MESSAGE_BYTES; // 25 МБ — лимит Gmail для вложения
 const ARCHIVE_REASON = "Архив сохранён целиком; распаковка — отдельный безопасный шаг";
+const OFFICE_EXT = /\.(docx|docm|dotx|xlsx|xlsm|pptx|odt|ods|odp)$/i;
+function isOfficeDocument(filename: string | null | undefined, mime: string | null | undefined) {
+  return OFFICE_EXT.test(filename ?? "") || /openxmlformats|opendocument/i.test(mime ?? "");
+}
 const AV_DISABLED_REASON = "Антивирусная проверка не настроена";
 /** Ручной/адресный повтор (MAIL-08) пробует и «недоступные» позиции; cron — только pending (см. listIncompleteMessages). */
 const RETRYABLE: AttachmentStatus[] = ["pending", "downloading", "stored", "unavailable"];
@@ -400,7 +404,8 @@ async function downloadAttachment(orgId: string, accountId: string, providerMess
       } else if (arc.corrupt) {
         if (status === "verified") status = "rejected";
         reasons.unshift("Архив повреждён или неполон: требуется повторное получение");
-      } else {
+      } else if (!isOfficeDocument(a.filename, a.mimeType)) {
+        // DOCX/XLSX/ODT — это ZIP-контейнеры, но не архивы для распаковки.
         reasons.unshift(ARCHIVE_REASON);
       }
     }

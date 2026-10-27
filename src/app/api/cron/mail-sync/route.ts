@@ -11,6 +11,7 @@ import { listIncompleteMessages, retryIncompleteAttachments, syncAccount } from 
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+// Бюджеты с запасом ~15 с: одно письмо с крупными вложениями может грузиться дольше остатка бюджета.
 
 /**
  * MAIL-03: периодическая сверка ящика (работает всегда, уведомления лишь ускоряют).
@@ -31,7 +32,7 @@ export async function GET(req: Request) {
     where: and(eq(schema.mailAccounts.provider, "gmail"), notInArray(schema.mailAccounts.state, ["disabled", "login_required"])),
   });
   const report: Record<string, unknown>[] = [];
-  const perAccount = Math.max(10_000, Math.floor(50_000 / Math.max(1, accounts.length)));
+  const perAccount = Math.max(10_000, Math.floor(32_000 / Math.max(1, accounts.length)));
 
   for (const acc of accounts) {
     const r: Record<string, unknown> = { account: acc.id };
@@ -40,7 +41,7 @@ export async function GET(req: Request) {
     } catch (e) {
       r.watch = `ошибка: ${(e as Error).message}`; // наблюдение лишь ускоряет — не блокирует сверку
     }
-    const budget = Math.min(perAccount, 50_000 - (Date.now() - started));
+    const budget = Math.min(perAccount, 32_000 - (Date.now() - started));
     if (budget < 5_000) {
       r.sync = "отложено: исчерпан бюджет времени";
       report.push(r);
@@ -54,10 +55,10 @@ export async function GET(req: Request) {
     }
 
     // MAIL-08: дозагрузка неполных поступлений, пока есть время.
-    if (Date.now() - started < 45_000) {
+    if (Date.now() - started < 36_000) {
       let retried = 0;
       for (const m of await listIncompleteMessages(acc.id, 10)) {
-        if (Date.now() - started > 48_000) break;
+        if (Date.now() - started > 40_000) break;
         try {
           await retryIncompleteAttachments(m.id);
           retried++;
@@ -68,7 +69,7 @@ export async function GET(req: Request) {
       r.retried = retried;
     }
 
-    if (Date.now() - started < 52_000) {
+    if (Date.now() - started < 44_000) {
       try {
         r.bounces = await processBounces(acc.id, acc.organizationId);
       } catch (e) {

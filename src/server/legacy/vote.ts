@@ -63,3 +63,25 @@ export async function legacySubmitVote(round: string, token: string, choice: str
     return { ok: false, error: "Не удалось связаться с сервисом голосования. Голос мог не записаться — обновите страницу и проверьте статус." };
   }
 }
+
+/** Публичная карточка утверждённого заключения (открывается по QR-коду). Текст карточки хранится в папке дела. */
+export const CARD_ID_RE = /^2026-(\d{3})$/;
+export interface LegacyCard {
+  ok: true;
+  n: number;
+  text: string;
+  updated: string;
+}
+
+export async function legacyCard(id: string): Promise<LegacyResult<LegacyCard>> {
+  const m = CARD_ID_RE.exec(id);
+  if (!m) return { ok: false, error: "Карточка не найдена." };
+  const url = `${LEGACY_VOTE_URL}?api=card&n=${Number(m[1])}`;
+  try {
+    const r = await fetch(url, { next: { revalidate: 300 }, redirect: "follow", signal: AbortSignal.timeout(25_000) });
+    const j = (await r.json()) as LegacyResult<LegacyCard>;
+    return j && typeof j === "object" ? j : { ok: false, error: "Карточка не найдена." };
+  } catch {
+    return { ok: false, error: "Сервис временно недоступен. Обновите страницу через минуту." };
+  }
+}

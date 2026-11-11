@@ -14,6 +14,7 @@ import type { SessionUser } from "../auth";
 import { buildCoverLetterDocx } from "../docs/cover-letter-docx";
 import { getMailAdapter, getPrimaryAccount } from "@/integrations/mail";
 import { UnknownSendResultError, MailAuthError } from "@/integrations/mail/types";
+import { isChairApproved } from "@/domain/policies";
 
 /**
  * Состав манифеста пакета: каждый файл указывает версию документа и роль в комплекте.
@@ -81,9 +82,15 @@ export async function prepareRkaPackage(user: SessionUser, input: { cycleId: str
     const card = await tx.query.qrCards.findFirst({ where: eq(schema.qrCards.cycleId, cycle.id) });
     if (!card) throw new CommandError("Нет подготовленного PDF заключения с QR");
     const pdf = await tx.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, card.documentVersionId) });
-    if (!pdf || pdf.state !== "signed") throw new CommandError("Заключение ещё не подписано ЭЦП председателя");
-    const sign = await tx.query.signSessions.findFirst({ where: and(eq(schema.signSessions.documentVersionId, pdf.id), eq(schema.signSessions.state, "verified")) });
-    if (!sign) throw new CommandError("Проверка ЭЦП не завершена — подготовка комплекта заблокирована (BR-05)");
+    // Без ЭЦП (политика организации на момент подготовки PDF): достаточно утверждения председателем.
+    const withoutEds = isChairApproved(card.signatureStatus);
+    if (withoutEds) {
+      if (!pdf || !["ready_to_sign", "signed"].includes(pdf.state)) throw new CommandError("PDF заключения не готов или заменён");
+    } else {
+      if (!pdf || pdf.state !== "signed") throw new CommandError("Заключение ещё не подписано ЭЦП председателя");
+      const sign = await tx.query.signSessions.findFirst({ where: and(eq(schema.signSessions.documentVersionId, pdf.id), eq(schema.signSessions.state, "verified")) });
+      if (!sign) throw new CommandError("Проверка ЭЦП не завершена — подготовка комплекта заблокирована (BR-05)");
+    }
 
     const active = await tx.query.outgoings.findFirst({ where: and(eq(schema.outgoings.cycleId, cycle.id), eq(schema.outgoings.kind, "rka_package"), inArray(schema.outgoings.state, ["project", "package_checked", "draft", "approved", "sending", "unknown_result", "approval_stale"])) });
     if (active) throw new CommandError("Комплект по этому циклу уже подготовлен");
@@ -107,7 +114,7 @@ export async function prepareRkaPackage(user: SessionUser, input: { cycleId: str
 
     const chair = (await tx.query.users.findFirst({ where: eq(schema.users.id, cycle.approvedBy!) }))!;
     const attachmentsList = [
-      { name: `${cycle.supplementary ? (lang === "kk" ? "Қосымша қорытынды" : "Дополнительное заключение") : lang === "kk" ? "Қорытынды" : "Заключение"} №${cycle.conclusionNumber} (PDF, ЭЦП)` },
+      { name: `${cycle.supplementary ? (lang === "kk" ? "Қосымша қорытынды" : "Дополнительное заключение") : lang === "kk" ? "Қорытынды" : "Заключение"} №${cycle.conclusionNumber} (PDF${withoutEds ? "" : lang === "kk" ? ", ЭЦҚ" : ", ЭЦП"})` },
       ...drafts.map((d) => ({ name: d.v.filename ?? d.d.title })),
     ];
     const coverData = {
@@ -117,7 +124,15 @@ export async function prepareRkaPackage(user: SessionUser, input: { cycleId: str
       rkaDate: fmt(kase.rkaDate),
       caseNumber: formatBase(kase.number),
       applicant: kase.applicant,
-      purpose: input.purpose?.trim() || (lang === "kk" ? "Қорытынды Комиссия отырысында қаралып, төрағаның ЭЦҚ-мен қол қойылды." : "Заключение рассмотрено Комиссией и подписано ЭЦП председателя."),
+      purpose:
+        input.purpose?.trim() ||
+        (withoutEds
+          ? lang === "kk"
+            ? "Қорытынды Комиссия мүшелерінің дауыс беруімен қабылданып, Комиссия төрағасы бекітті."
+            : "Заключение принято по итогам голосования членов Комиссии и утверждено председателем Комиссии."
+          : lang === "kk"
+            ? "Қорытынды Комиссия отырысында қаралып, төрағаның ЭЦҚ-мен қол қойылды."
+            : "Заключение рассмотрено Комиссией и подписано ЭЦП председателя."),
       attachments: attachmentsList,
       chairFullName: chair.fullName,
       commissionName: lang === "kk" ? org.nameKk ?? org.name : org.name,

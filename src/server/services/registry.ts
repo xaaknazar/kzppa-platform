@@ -106,7 +106,7 @@ export async function buildRegistry(orgId: string, opts: { caseIds?: string[]; a
     const deadline = initial?.extendedUntil ?? initial?.deadline ?? null;
     const overdue = !!deadline && !["sent", "closed", "approved"].includes(c.state) && new Date(`${deadline}T23:59:59+05:00`).getTime() < Date.now();
     const incomplete = messages.some((m) => m.caseId === c.id && m.direction === "in" && m.intakeState === "incomplete");
-    const finalPdfReady = card && card.signatureStatus && (card.signatureStatus as { state?: string }).state === "verified";
+    const finalPdfReady = card && card.signatureStatus && ["verified", "chair_approved"].includes(String((card.signatureStatus as { state?: string }).state));
 
     const row: RegistryRow = {
       caseId: c.id,

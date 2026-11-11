@@ -1,4 +1,5 @@
 import "server-only";
+import { nextInRotation } from "@/domain/rotation";
 import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { can } from "@/domain/acl";
@@ -85,7 +86,8 @@ export async function dashboard(u: SessionUser) {
           .from(schema.qrCards)
           .innerJoin(schema.cases, eq(schema.cases.id, schema.qrCards.caseId))
           .innerJoin(schema.documentVersions, eq(schema.documentVersions.id, schema.qrCards.documentVersionId))
-          .where(and(eq(schema.qrCards.organizationId, orgId), eq(schema.documentVersions.state, "ready_to_sign"))),
+          // Утверждённые без ЭЦП заключения подписи не ждут.
+          .where(and(eq(schema.qrCards.organizationId, orgId), eq(schema.documentVersions.state, "ready_to_sign"), sql`coalesce(${schema.qrCards.signatureStatus}->>'state', '') <> 'chair_approved'`)),
       }
     : null;
   const unknownSends = staff(u)
@@ -179,3 +181,16 @@ export async function canDownloadVersion(u: SessionUser, versionId: string) {
     (r.d.area === "signed" && can(u.principal, "case.read_signed", { caseId }));
   return ok ? r : null;
 }
+
+/** Предложение исполнителя по очереди автоматического распределения (председатель может выбрать другого). */
+export async function suggestedExecutor(orgId: string) {
+  const queue = await db
+    .select({ id: schema.users.id, fullName: schema.users.fullName })
+    .from(schema.orgRoles)
+    .innerJoin(schema.users, eq(schema.users.id, schema.orgRoles.userId))
+    .where(and(eq(schema.orgRoles.organizationId, orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active"), eq(schema.users.inRotation, true)));
+  const lastAsg = await db.query.assignments.findFirst({ where: and(eq(schema.assignments.organizationId, orgId), eq(schema.assignments.kind, "initial")), orderBy: desc(schema.assignments.createdAt) });
+  const lastUser = lastAsg ? await db.query.users.findFirst({ where: eq(schema.users.id, lastAsg.executorId) }) : null;
+  return nextInRotation(queue, lastUser ? { id: lastUser.id, fullName: lastUser.fullName } : null);
+}
+

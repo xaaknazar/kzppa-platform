@@ -48,6 +48,7 @@ type SigTone = "ok" | "warn" | "neutral";
 function signatureStatus(state: string): { tone: SigTone; ru: string; kk: string } {
   const s = state.toLowerCase();
   if (["verified", "valid", "ok", "signed_verified"].includes(s)) return { tone: "ok", ru: "ЭЦП проверена", kk: "ЭЦҚ тексерілді" };
+  if (s === "chair_approved") return { tone: "ok", ru: "Утверждено председателем Комиссии (без ЭЦП)", kk: "Комиссия төрағасы бекітті (ЭЦҚ-сыз)" };
   if (["unavailable", "check_unavailable", "error", "unknown", "needs_reconcile"].includes(s)) return { tone: "neutral", ru: "Проверка недоступна", kk: "Тексеру қолжетімсіз" };
   return { tone: "warn", ru: "Подпись ещё не подтверждена", kk: "Қолтаңба әлі расталмаған" };
 }
@@ -119,7 +120,7 @@ export default async function QrCardPage({ params, searchParams }: { params: Pro
           <p className="mt-1.5 text-[13px] text-ink-2 tnum">
             {card.signature?.checkedAt ? (
               <>
-                Время проверки: {fmtDate(card.signature.checkedAt, true)} (Алматы)
+                {card.signature.state === "chair_approved" ? "Дата утверждения" : "Время проверки"}: {fmtDate(card.signature.checkedAt, true)} (Алматы)
                 <span lang="kk" className="text-ink-3"> / Тексерілген уақыты</span>
               </>
             ) : sig.tone === "ok" ? null : (

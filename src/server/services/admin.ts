@@ -3,6 +3,7 @@ import { and, eq, inArray, ne, sql, count } from "drizzle-orm";
 import { db, schema, type Tx } from "@/db/client";
 import type { OrgRole } from "@/domain/types";
 import type { DecisionRule, QuorumRule } from "@/domain/quorum";
+import { signatureMode, type SignatureMode } from "@/domain/policies";
 import { audit } from "../audit";
 import { CommandError, runCommand } from "../command";
 import type { SessionUser } from "../auth";
@@ -29,7 +30,7 @@ export async function activeCompositionCount(orgId: string, tx: Tx | typeof db =
     .select({ n: count() })
     .from(schema.orgRoles)
     .innerJoin(schema.users, eq(schema.users.id, schema.orgRoles.userId))
-    .where(and(eq(schema.orgRoles.organizationId, orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active")));
+    .where(and(eq(schema.orgRoles.organizationId, orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active"), eq(schema.users.votingRight, true)));
   return r?.n ?? 0;
 }
 
@@ -49,6 +50,10 @@ export interface MemberInput {
   collegium?: string | null;
   roles: OrgRole[];
   status: "active" | "inactive";
+  /** «Право голоса»: участвует в голосованиях и в расчёте кворума. По умолчанию — да. */
+  votingRight?: boolean;
+  /** «Участвует в автоматическом распределении» исполнителей. По умолчанию — да. */
+  inRotation?: boolean;
 }
 
 export async function upsertMember(user: SessionUser, input: MemberInput) {
@@ -83,6 +88,8 @@ export async function upsertMember(user: SessionUser, input: MemberInput) {
       addressKk: clean(input.addressKk),
       collegium: clean(input.collegium),
       status: input.status,
+      votingRight: input.votingRight !== false,
+      inRotation: input.inRotation !== false,
     };
 
     if (input.id) {
@@ -108,7 +115,7 @@ export async function upsertMember(user: SessionUser, input: MemberInput) {
         action: "admin.member.update",
         objectType: "user",
         objectId: before.id,
-        before: { fullName: before.fullName, fullNameKk: before.fullNameKk, firstName: before.firstName, patronymic: before.patronymic, addressKk: before.addressKk, email: before.email, emailVerified: before.emailVerified, collegium: before.collegium, status: before.status, roles: beforeRoles },
+        before: { fullName: before.fullName, fullNameKk: before.fullNameKk, firstName: before.firstName, patronymic: before.patronymic, addressKk: before.addressKk, email: before.email, emailVerified: before.emailVerified, collegium: before.collegium, status: before.status, votingRight: before.votingRight, inRotation: before.inRotation, roles: beforeRoles },
         after: { ...fields, email, emailVerified, roles: [...roles].sort() },
       });
       return { id: before.id, emailVerified, emailReset: emailChanged && !emailVerified };
@@ -153,6 +160,8 @@ export interface OrgSettingsInput {
   outgoingYearInNumber: boolean;
   quorumRule: QuorumRule;
   decisionRule: DecisionRule;
+  /** Окончательность заключения: личная ЭЦП или утверждение председателем без ЭЦП. */
+  signatureMode?: SignatureMode;
 }
 
 function validateQuorum(q: QuorumRule): QuorumRule {
@@ -175,6 +184,8 @@ function validateDecision(d: DecisionRule): DecisionRule {
     if (!source || source.length < 5) {
       throw new CommandError("Укажите пункт и редакцию Положения, из которых перенесено правило определения решения. Без источника правило не сохраняется: платформа не выбирает большинство сама.");
     }
+    // Решающий голос председателя при равенстве (п. 20 Положения) сохраняется только для правила, где он применим.
+    if (d.kind === "for_more_than_half_of_participants") return { kind: d.kind, source, chairCastingVote: !!d.chairCastingVote };
     return { kind: d.kind, source };
   }
   throw new CommandError("Выберите правило определения решения.");
@@ -213,7 +224,9 @@ export async function updateOrgSettings(user: SessionUser, input: OrgSettingsInp
       warnings.push("Правило определения решения не зафиксировано. Протоколы будут показывать «Решение не определено», пока правило не перенесено из Положения.");
     }
 
-    const after = { name, nameKk: clean(input.nameKk), shortName, officialSender, rkaAddress, rkaAddressee, outgoingPrefix, outgoingYearInNumber: !!input.outgoingYearInNumber, quorumRule, decisionRule };
+    const sigMode: SignatureMode = input.signatureMode === "chair_approval" ? "chair_approval" : input.signatureMode === "eds" ? "eds" : signatureMode(before.policies);
+    const policies = { ...((before.policies as Record<string, unknown>) ?? {}), signature: sigMode };
+    const after = { name, nameKk: clean(input.nameKk), shortName, officialSender, rkaAddress, rkaAddressee, outgoingPrefix, outgoingYearInNumber: !!input.outgoingYearInNumber, quorumRule, decisionRule, policies };
     await tx.update(schema.organizations).set(after).where(eq(schema.organizations.id, orgId));
     await audit(tx, {
       orgId,
@@ -232,6 +245,7 @@ export async function updateOrgSettings(user: SessionUser, input: OrgSettingsInp
         outgoingYearInNumber: before.outgoingYearInNumber,
         quorumRule: before.quorumRule,
         decisionRule: before.decisionRule,
+        policies: before.policies,
       },
       after,
       // Прошлые протоколы не меняются: каждый цикл хранит снимок правил на момент открытия.

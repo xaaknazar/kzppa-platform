@@ -4,6 +4,7 @@ import { requireUser } from "@/server/auth";
 import { activeCompositionCount } from "@/server/services/admin";
 import { describeDecision, type DecisionRule, type QuorumRule } from "@/domain/quorum";
 import { Notice } from "@/components/ui";
+import { signatureMode } from "@/domain/policies";
 import { SettingsForm } from "./settings-form";
 
 export const metadata = { title: "Общие настройки" };
@@ -37,6 +38,7 @@ export default async function AdminSettingsPage() {
           outgoingYearInNumber: org.outgoingYearInNumber,
           quorumRule,
           decisionRule,
+          signatureMode: signatureMode(org.policies),
         }}
       />
     </div>

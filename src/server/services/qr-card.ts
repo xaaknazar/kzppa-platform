@@ -13,7 +13,7 @@ import type { MANIFEST_PREFIX_LEN } from "../docs/qr"; // длина префи�
  *  - До завершения проверки карточка не утверждает, что ЭЦП подтверждена (DOC-06, BR-05).
  */
 
-export type SignatureCardState = "verified" | "pending" | "unavailable";
+export type SignatureCardState = "verified" | "chair_approved" | "pending" | "unavailable";
 
 export interface PublicQrCard {
   commissionName: string;
@@ -56,6 +56,7 @@ interface StoredStatus {
 
 const LABELS: Record<SignatureCardState, { ru: string; kk: string }> = {
   verified: { ru: "ЭЦП проверена", kk: "ЭЦҚ тексерілді" },
+  chair_approved: { ru: "Утверждено председателем Комиссии (без ЭЦП)", kk: "Комиссия төрағасы бекітті (ЭЦҚ-сыз)" },
   pending: { ru: "Подпись ещё не подтверждена", kk: "Қолтаңба әлі расталмаған" },
   unavailable: { ru: "Проверка недоступна", kk: "Тексеру қолжетімсіз" },
 };
@@ -69,13 +70,14 @@ function signatureView(st: StoredStatus | null): PublicQrCard["signature"] {
   const testOnly = st?.dryRun === true;
   let state: SignatureCardState = "pending";
   if (raw === "unavailable") state = "unavailable";
+  else if (raw === "chair_approved") state = "chair_approved";
   else if (raw === "verified" && !testOnly && st?.cryptoValid === true && st?.trustChecked === true) state = "verified";
   const base = LABELS[state];
   return {
     state,
     label: testOnly ? `${base.ru} (тестовая подпись без юридической силы)` : base.ru,
     labelKk: base.kk,
-    checkedAt: state === "pending" && raw !== "verified" ? null : st?.checkedAt ?? null,
+    checkedAt: state === "chair_approved" ? (st as { approvedAt?: string } | null)?.approvedAt ?? null : state === "pending" && raw !== "verified" ? null : st?.checkedAt ?? null,
     testOnly,
   };
 }

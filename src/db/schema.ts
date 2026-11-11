@@ -58,6 +58,8 @@ export const users = pgTable(
     emailVerified: boolean("email_verified").notNull().default(false),
     collegium: text("collegium"),
     status: text("status").notNull().default("active"),
+    votingRight: boolean("voting_right").notNull().default(true), // «Право голоса»
+    inRotation: boolean("in_rotation").notNull().default(true), // «Участвует в автоматическом распределении»
     createdAt: created(),
   },
   (t) => [uniqueIndex("users_org_email").on(t.organizationId, t.email)],

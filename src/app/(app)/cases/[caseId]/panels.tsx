@@ -57,18 +57,6 @@ function Err({ error }: { error: string | null }) {
   ) : null;
 }
 
-/** П. 27 Положения: заключение — не позднее 15 рабочих дней (праздники не учитываются). */
-function addWorkingDays(n: number) {
-  const d = new Date();
-  let left = n;
-  while (left > 0) {
-    d.setDate(d.getDate() + 1);
-    const wd = d.getDay();
-    if (wd !== 0 && wd !== 6) left--;
-  }
-  return d.toISOString().slice(0, 10);
-}
-
 function addDays(n: number) {
   const d = new Date(Date.now() + n * 86400_000);
   return d.toISOString().slice(0, 10);
@@ -76,11 +64,12 @@ function addDays(n: number) {
 
 /* ───────── Назначение исполнителя (ACL-03, FLOW-01) ───────── */
 
-export function AssignForm({ caseId, lang, blocked, members }: { caseId: string; lang: "ru" | "kk" | null; blocked: boolean; members: { id: string; name: string; ready: boolean }[] }) {
+export function AssignForm({ caseId, lang, blocked, members, suggestedId }: { caseId: string; lang: "ru" | "kk" | null; blocked: boolean; members: { id: string; name: string; ready: boolean }[]; suggestedId?: string | null }) {
   const { pending, error, run } = useAction();
   const key = useKey();
-  const [executorId, setExecutor] = useState("");
-  const [deadline, setDeadline] = useState(addWorkingDays(15));
+  const [executorId, setExecutor] = useState(suggestedId && members.some((m) => m.id === suggestedId) ? suggestedId : "");
+  // Практика Комиссии: проект заключения — в течение недели после поручения.
+  const [deadline, setDeadline] = useState(addDays(7));
   const [task, setTask] = useState("изучить материалы обращения и подготовить проект заключения Комиссии");
   const [l, setL] = useState<"ru" | "kk" | "">(lang ?? "");
   const sel = members.find((m) => m.id === executorId);
@@ -91,7 +80,7 @@ export function AssignForm({ caseId, lang, blocked, members }: { caseId: string;
         После назначения исполнитель сразу получит доступ только к рабочей области этого дела, а платформа подготовит черновик поручения. Письмо уйдёт лишь после того, как вы утвердите его текст.
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Исполнитель из состава комиссии" error={sel && !sel.ready ? "В профиле не подтверждено обращение по имени и отчеству" : null}>
+        <Field label="Исполнитель из состава комиссии" hint={suggestedId && executorId === suggestedId ? "Следующий по очереди автоматического распределения" : undefined} error={sel && !sel.ready ? "В профиле не подтверждено обращение по имени и отчеству" : null}>
           <Select value={executorId} onChange={(e) => setExecutor(e.target.value)} disabled={blocked}>
             <option value="">Выберите участника</option>
             {members.map((m) => (
@@ -102,7 +91,7 @@ export function AssignForm({ caseId, lang, blocked, members }: { caseId: string;
             ))}
           </Select>
         </Field>
-        <Field label="Срок" hint="По умолчанию 15 рабочих дней (п. 27 Положения)">
+        <Field label="Срок" hint="По умолчанию 7 дней; по п. 27 Положения — не позднее 15 рабочих дней">
           <Input type="date" value={deadline} min={addDays(0)} onChange={(e) => setDeadline(e.target.value)} disabled={blocked} />
         </Field>
         <Field label="Язык поручения" hint={lang ? "По языку исходного обращения" : "Язык обращения не определён автоматически"}>
@@ -113,7 +102,7 @@ export function AssignForm({ caseId, lang, blocked, members }: { caseId: string;
           </Select>
         </Field>
         <div className="sm:col-span-2">
-          <Field label="Предмет поручения" hint="Вставляется в текст письма после слов «Вам поручается»">
+          <Field label="Предмет поручения" hint="Сохраняется в карточке поручения">
             <Textarea rows={2} value={task} onChange={(e) => setTask(e.target.value)} disabled={blocked} />
           </Field>
         </div>

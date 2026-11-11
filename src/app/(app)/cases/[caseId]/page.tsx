@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, isChair } from "@/server/auth";
-import { caseDetail } from "@/server/queries";
+import { caseDetail, suggestedExecutor } from "@/server/queries";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { can } from "@/domain/acl";
+import { isChairApproved } from "@/domain/policies";
 import { computeRoute } from "@/server/route";
 import { RouteRail } from "@/components/route-rail";
 import { Badge, Empty, Hash, KV, Notice, PageHeader, Section, Tabs, fmtDate, fmtSize, type Tone } from "@/components/ui";
@@ -68,6 +69,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
   const chair = isChair(u);
   const name = (id?: string | null) => d.users.find((x) => x.id === id)?.fullName ?? "—";
   const executors = d.users.filter((x) => x.status === "active");
+  const suggestedExecutorId = !d.assignments.length && isChair(u) ? (await suggestedExecutor(u.orgId))?.id ?? null : null;
   const base = `/cases/${caseId}${sp.cycle ? `?cycle=${sp.cycle}` : ""}`;
   // FLOW-13: приглашение, доставка и открытие ссылки — отдельные от голоса события.
   const canSeeRoot = can(u.principal, "case.read_root", { caseId: kase.id });
@@ -148,7 +150,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
                   Передача дела исполнителю заблокирована до сохранения всех вложений или их исключения с основанием.
                 </Notice>
               )}
-              <NextStep {...{ d, cycle, chair, kase, executors, activeAssignment, drafts, t, finalVersion, card, pdf, signs, pkg, suggested, langMismatch: !!langMismatch, name }} />
+              <NextStep {...{ d, cycle, chair, kase, executors, suggestedExecutorId, activeAssignment, drafts, t, finalVersion, card, pdf, signs, pkg, suggested, langMismatch: !!langMismatch, name }} />
               <Section title="Сведения об обращении">
                 <KV
                   items={[
@@ -462,6 +464,7 @@ function NextStep(p: {
   chair: boolean;
   kase: D["kase"];
   executors: D["users"];
+  suggestedExecutorId: string | null;
   activeAssignment: D["assignments"][number] | undefined;
   drafts: D["documents"];
   t: Tally | null;
@@ -480,7 +483,7 @@ function NextStep(p: {
   // Назначение исполнителя
   if (!a || (cycle.supplementary && !d.assignments.some((x) => x.cycleId === cycle.id))) {
     return chair ? (
-      <AssignForm caseId={kase.id} lang={kase.lang as "ru" | "kk" | null} blocked={!d.completeness.complete} members={p.executors.map((x) => ({ id: x.id, name: x.fullName, ready: !!x.firstName }))} />
+      <AssignForm caseId={kase.id} lang={kase.lang as "ru" | "kk" | null} blocked={!d.completeness.complete} members={p.executors.map((x) => ({ id: x.id, name: x.fullName, ready: !!x.firstName }))} suggestedId={p.suggestedExecutorId} />
     ) : (
       <Notice title="Ожидается назначение исполнителя председателем">Секретарь может подготовить кандидатуру, но доступ выдаётся только по решению председателя.</Notice>
     );
@@ -517,9 +520,11 @@ function NextStep(p: {
     return chair ? <ApproveFinalPanel caseId={kase.id} cycleId={cycle.id} version={cycle.version} route={cycle.finalRoute as "as_is" | "rework"} finalVersion={p.finalVersion ? { id: p.finalVersion.v.id, name: p.finalVersion.v.filename ?? "", sha: p.finalVersion.v.sha256 ?? "" } : null} votedVersionId={cycle.draftVersionId} /> : <Notice title="Окончательная редакция на утверждении председателя" />;
   }
   if (cycle.approvedAt && !pdf) return chair ? <PreparePdfPanel caseId={kase.id} cycleId={cycle.id} version={cycle.version} /> : <Notice title="Готовится PDF с QR" />;
-  if (pdf && pdf.v.state !== "signed") return chair ? <SignPanel caseId={kase.id} versionId={pdf.v.id} lastSession={lastSign ? { id: lastSign.id, state: lastSign.state } : null} /> : <Notice tone="seal" title="Ожидается личная ЭЦП председателя" />;
-  if (pdf && pdf.v.state === "signed" && !pkg) {
-    const verified = signs.some((s) => s.state === "verified");
+  // Режим без ЭЦП: заключение окончательное после утверждения председателем (политика организации).
+  const withoutEds = isChairApproved(card?.signatureStatus);
+  if (pdf && pdf.v.state !== "signed" && !withoutEds) return chair ? <SignPanel caseId={kase.id} versionId={pdf.v.id} lastSession={lastSign ? { id: lastSign.id, state: lastSign.state } : null} /> : <Notice tone="seal" title="Ожидается личная ЭЦП председателя" />;
+  if (pdf && (pdf.v.state === "signed" || withoutEds) && !pkg) {
+    const verified = withoutEds || signs.some((s) => s.state === "verified");
     if (!verified) return <Notice tone="warn" title="Подпись получена, проверка не завершена">Комплект в РКА будет доступен после завершения проверки ЭЦП.</Notice>;
     return <PreparePackageForm caseId={kase.id} cycleId={cycle.id} lang={kase.lang as "ru" | "kk" | null} langMismatch={p.langMismatch} suggestions={p.suggested.map((x) => ({ id: x.v.id, name: x.v.filename ?? x.d.title }))} />;
   }

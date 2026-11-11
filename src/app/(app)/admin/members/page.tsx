@@ -55,6 +55,8 @@ export default async function MembersPage({ searchParams }: { searchParams: Prom
     collegium: x.collegium ?? "",
     roles: rolesOf.get(x.id) ?? [],
     status: x.status === "inactive" ? "inactive" : "active",
+    votingRight: x.votingRight,
+    inRotation: x.inRotation,
   });
   const base = show === "all" ? "/admin/members?show=all" : "/admin/members";
   const withEdit = (id: string) => `${base}${base.includes("?") ? "&" : "?"}edit=${id}`;

@@ -28,9 +28,11 @@ export interface MemberValues {
   collegium: string;
   roles: OrgRole[];
   status: "active" | "inactive";
+  votingRight: boolean;
+  inRotation: boolean;
 }
 
-export const EMPTY_MEMBER: MemberValues = { fullName: "", fullNameKk: "", firstName: "", patronymic: "", addressKk: "", email: "", emailVerified: false, collegium: "", roles: ["member"], status: "active" };
+export const EMPTY_MEMBER: MemberValues = { fullName: "", fullNameKk: "", firstName: "", patronymic: "", addressKk: "", email: "", emailVerified: false, collegium: "", roles: ["member"], status: "active", votingRight: true, inRotation: true };
 
 export function MemberForm({ initial, closeHref }: { initial: MemberValues; closeHref: string }) {
   const router = useRouter();
@@ -81,6 +83,8 @@ export function MemberForm({ initial, closeHref }: { initial: MemberValues; clos
         collegium: v.collegium || null,
         roles: v.roles,
         status: v.status,
+        votingRight: v.votingRight,
+        inRotation: v.inRotation,
       });
       if (!r.ok) {
         setError(r.error);
@@ -183,6 +187,26 @@ export function MemberForm({ initial, closeHref }: { initial: MemberValues; clos
         </div>
         <p className="mt-1 text-[12.5px] text-ink-3">Участники не удаляются: история дел и протоколы ссылаются на них. Выведенный из состава не входит и не учитывается в новых голосованиях.</p>
       </fieldset>
+
+      {v.roles.includes("member") && (
+        <fieldset className="space-y-2">
+          <legend className="mb-1 text-[13px] font-medium text-ink-2">Участие в работе Комиссии</legend>
+          <label className="flex items-start gap-2.5 text-[14px] text-ink">
+            <input type="checkbox" className="mt-1 size-4 accent-[var(--color-petrol)]" checked={v.votingRight} onChange={(e) => set("votingRight", e.target.checked)} />
+            <span>
+              Право голоса
+              <span className="block text-[12px] text-ink-3">Получает приглашения на голосования и учитывается в составе при расчёте кворума.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2.5 text-[14px] text-ink">
+            <input type="checkbox" className="mt-1 size-4 accent-[var(--color-petrol)]" checked={v.inRotation} onChange={(e) => set("inRotation", e.target.checked)} />
+            <span>
+              Участвует в автоматическом распределении
+              <span className="block text-[12px] text-ink-3">Предлагается исполнителем новых обращений по очереди.</span>
+            </span>
+          </label>
+        </fieldset>
+      )}
 
       {error && <Notice tone="bad" title="Не сохранено">{error}</Notice>}
       {notice && <Notice tone="ok" title={notice} />}

@@ -50,6 +50,8 @@ export function surnameStem(raw: string): string {
 
 export interface ParsedSubject {
   rkaNumber: string | null;
+  /** Номер обращения в Комиссии из темы: «Проект заключения — обращение № 9», «№ 9 өтініш». */
+  caseNumberRef: number | null;
   year: number | null;
   applicantCandidates: string[]; // исходные написания
   kind: IntakeKind;
@@ -78,6 +80,9 @@ export function parseSubject(subject: string, body = ""): ParsedSubject {
   const text = `${subject}\n${body}`;
   const rkaNumber = normalizeRkaNumber(text);
   if (rkaNumber) signals.push(`Номер РКА ${rkaNumber}`);
+
+  const caseNumberRef = parseCaseNumberRef(subject);
+  if (caseNumberRef !== null) signals.push(`Номер обращения № ${caseNumberRef}`);
 
   const yearM = text.match(/\b(20\d{2})\b/);
   const year = yearM ? Number(yearM[1]) : null;
@@ -108,7 +113,18 @@ export function parseSubject(subject: string, body = ""): ParsedSubject {
     candidates.push(`${bare}${m[2] ?? ""}`.trim());
   }
 
-  return { rkaNumber, year, applicantCandidates: candidates, kind, signals };
+  return { rkaNumber, caseNumberRef, year, applicantCandidates: candidates, kind, signals };
+}
+
+/**
+ * Номер обращения в Комиссии, указанный в теме письма. Номер письма РКА («№ 04-01/1462»)
+ * сюда не попадает: после цифр не должно быть дефиса, косой черты или ещё цифр.
+ */
+export function parseCaseNumberRef(subject: string): number | null {
+  const m =
+    subject.match(/(?:обращени\S*|дел[оауе]м?)\s*№\s*0*(\d{1,4})(?![\d/-])/i) ??
+    subject.match(/№\s*0*(\d{1,4})(?![\d/-])\s*(?:өтініш|отиниш|іс\b)/i);
+  return m ? Number(m[1]) : null;
 }
 
 export interface CaseIndexEntry {
@@ -174,9 +190,15 @@ export function matchCase(input: MatchInput): MatchDecision {
       score += 0.35;
       r.push(`Совпала фамилия заявителя (${c.applicantFullName})`);
     }
-    if (c.executorEmail && c.executorEmail.toLowerCase() === input.fromEmail.toLowerCase()) {
+    const executorHit = !!(c.executorEmail && c.executorEmail.toLowerCase() === input.fromEmail.toLowerCase());
+    if (executorHit) {
       score += 0.15;
       r.push("Письмо от назначенного исполнителя");
+    }
+    // Исполнитель указывает в теме номер обращения, как просит поручение: «Проект заключения — обращение № 9».
+    if (parsed.caseNumberRef !== null && parsed.caseNumberRef === c.caseNumber) {
+      score += executorHit ? 0.6 : 0.3;
+      r.push(executorHit ? `Номер обращения № ${c.caseNumber} в теме от исполнителя этого дела` : `Номер обращения № ${c.caseNumber} в теме`);
     }
     if (score > 0) {
       // Противоречие: номер указывает на это дело, а фамилия в теме — на другое.
@@ -202,7 +224,8 @@ export function matchCase(input: MatchInput): MatchDecision {
 
   const top = scored[0];
   const second = scored[1];
-  const strong = top && top.reasons.some((r) => r.startsWith("Совпал номер") || r.startsWith("Письмо в цепочке"));
+  const strong =
+    top && top.reasons.some((r) => r.startsWith("Совпал номер") || r.startsWith("Письмо в цепочке") || (r.startsWith("Номер обращения") && r.endsWith("от исполнителя этого дела")));
 
   if (top && strong && (!second || top.score - second.score >= 0.3)) {
     return { kind: "attach", caseId: top.caseId, confidence: top.score, reasons: top.reasons };

@@ -98,6 +98,7 @@ export interface SettingsValues {
   outgoingYearInNumber: boolean;
   quorumRule: QuorumRule;
   decisionRule: DecisionRule;
+  signatureMode: "eds" | "chair_approval";
 }
 
 type DecisionKind = DecisionRule["kind"];
@@ -312,6 +313,25 @@ export function SettingsForm({ initial, composition }: { initial: SettingsValues
             </p>
             <p className="mt-1 text-ink-3">Положение о Комиссии по защите профессиональных прав адвокатов РКА, утверждено Республиканской конференцией коллегий адвокатов 19.02.2022.</p>
           </details>
+        </div>
+      </fieldset>
+
+      <fieldset className="rounded-lg border border-line bg-surface px-5 py-4">
+        <legend className="px-1 text-[15px] font-semibold text-ink">Окончательность заключения</legend>
+        <div className="mt-2 space-y-2">
+          {([
+            ["chair_approval", "Утверждение председателем без ЭЦП", "Заключение становится окончательным после утверждения председателем в платформе. QR-карточка показывает «Утверждено председателем Комиссии (без ЭЦП)». Так Комиссия работает сейчас."],
+            ["eds", "Личная ЭЦП председателя", "После утверждения председатель подписывает PDF своей ЭЦП через eGov (SIGEX); комплект в РКА доступен только после проверки подписи."],
+          ] as const).map(([value, label, hint]) => (
+            <label key={value} className={clsx("flex items-start gap-3 rounded-md border px-3 py-2.5", v.signatureMode === value ? "border-petrol bg-petrol-50" : "border-line-strong")}>
+              <input type="radio" name="signatureMode" className="mt-1 size-4 accent-[var(--color-petrol)]" checked={v.signatureMode === value} onChange={() => set("signatureMode", value)} />
+              <span className="text-[14px] text-ink">
+                {label}
+                <span className="block text-[12.5px] text-ink-3">{hint}</span>
+              </span>
+            </label>
+          ))}
+          <p className="text-[12.5px] text-ink-3">Действует для заключений, PDF которых подготовлен после изменения настройки.</p>
         </div>
       </fieldset>
 

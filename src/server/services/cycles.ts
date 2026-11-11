@@ -15,6 +15,7 @@ import { env } from "../env";
 import { buildProtocolPdf } from "../docs/protocol-pdf";
 import { buildFinalConclusionPdf } from "../docs/conclusion-pdf";
 import { verificationUrl } from "../docs/qr";
+import { CHAIR_APPROVED, CHAIR_APPROVED_LABEL, signatureMode } from "@/domain/policies";
 
 /**
  * FLOW-04..08, FLOW-11..14, DEC-02, DEC-03. Циклы рассмотрения внутри одного дела.
@@ -93,7 +94,8 @@ export async function openVoting(user: SessionUser, input: { cycleId: string; cl
       .select({ id: schema.users.id, fullName: schema.users.fullName, email: schema.users.email })
       .from(schema.orgRoles)
       .innerJoin(schema.users, eq(schema.users.id, schema.orgRoles.userId))
-      .where(and(eq(schema.orgRoles.organizationId, orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active")))
+      // Голосуют действующие члены комиссии с правом голоса (тот же отбор, что в расчёте кворума).
+      .where(and(eq(schema.orgRoles.organizationId, orgId), eq(schema.orgRoles.role, "member"), eq(schema.users.status, "active"), eq(schema.users.votingRight, true)))
       .orderBy(asc(schema.users.fullName));
     if (!members.length) throw new CommandError("Состав комиссии пуст");
     const draft = await tx.query.documentVersions.findFirst({ where: eq(schema.documentVersions.id, cycle.draftVersionId) });
@@ -313,6 +315,9 @@ export async function prepareSignablePdf(user: SessionUser, input: { cycleId: st
     const exec = kase.executorId ? await tx.query.users.findFirst({ where: eq(schema.users.id, kase.executorId) }) : null;
     const chair = await tx.query.users.findFirst({ where: eq(schema.users.id, cycle.approvedBy!) });
     const t = cycle.tally as ReturnType<typeof tally>;
+    // Режим без ЭЦП: утверждение председателем в платформе делает заключение окончательным.
+    const org = await tx.query.organizations.findFirst({ where: eq(schema.organizations.id, orgId) });
+    const approvedWithoutEds = signatureMode(org?.policies) === "chair_approval";
     const [convDoc] = await tx
       .insert(schema.documents)
       .values({ organizationId: orgId, caseId: kase.id, cycleId: cycle.id, category: "conclusion", title: `${cycle.supplementary ? "Дополнительное заключение" : "Заключение"} №${cycle.conclusionNumber}`, lang: kase.conclusionLang ?? kase.lang, area: "signed" })
@@ -348,7 +353,7 @@ export async function prepareSignablePdf(user: SessionUser, input: { cycleId: st
     await setVersionState(tx, ver.id, "on_approval");
     await setVersionState(tx, ver.id, "approved");
     await setVersionState(tx, ver.id, "ready_to_sign");
-    await tx.insert(schema.qrCards).values({ organizationId: orgId, caseId: kase.id, cycleId: cycle.id, documentVersionId: ver.id, token, manifest, manifestHash, pdfSha256: blob.sha256, signatureStatus: { state: "not_signed", label: "Подпись ещё не подтверждена" } });
+    await tx.insert(schema.qrCards).values({ organizationId: orgId, caseId: kase.id, cycleId: cycle.id, documentVersionId: ver.id, token, manifest, manifestHash, pdfSha256: blob.sha256, signatureStatus: approvedWithoutEds ? { state: CHAIR_APPROVED, label: CHAIR_APPROVED_LABEL.ru, approvedBy: chair?.fullName ?? null, approvedAt: cycle.approvedAt.toISOString() } : { state: "not_signed", label: "Подпись ещё не подтверждена" } });
     await audit(tx, { orgId, actor, action: "conclusion.prepare_pdf", objectType: "document_version", objectId: ver.id, caseId: kase.id, after: { manifestHash, pdfSha256: blob.sha256, qrPlacement: built.qrPlacement } });
     return { versionId: ver.id, token };
   });

@@ -1,4 +1,5 @@
 import "server-only";
+import { isChairApproved } from "@/domain/policies";
 import type { caseDetail } from "./queries";
 import { OUTCOME_LABEL, type DecisionOutcome } from "@/domain/quorum";
 
@@ -121,7 +122,9 @@ export function computeRoute(d: Detail, cycleId?: string | null): RouteStep[] {
   });
 
   const signState = sign?.state;
-  push({
+  if (card && isChairApproved(card.signatureStatus)) {
+    push({ key: "sign", title: "Утверждено без ЭЦП", status: pdfVer ? "done" : "pending", at: cyc?.approvedAt, note: "Заключение окончательное после утверждения председателем; ЭЦП не требуется", seal: true });
+  } else push({
     key: "sign",
     title: "Личная ЭЦП председателя",
     status: pdfVer?.state === "signed" && signState === "verified" ? "done" : signState && ["auth_required", "needs_reconcile", "error", "expired", "refused"].includes(signState) ? "blocked" : pdfVer ? "current" : "pending",

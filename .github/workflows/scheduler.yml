@@ -1,12 +1,12 @@
-# Резервный планировщик фоновых операций (ARCH-03, MAIL-03).
-# Основной частый запуск — внешний cron (например, cron-job.org) каждые 1–5 минут:
+# Планировщик фоновых операций (ARCH-03, MAIL-03): почта комиссии, очередь писем,
+# закрытие истёкших голосований — каждые 5 минут (GitHub может запускать с задержкой).
+# Собственные cron-задачи Vercel на текущем тарифе — только раз в сутки (vercel.json).
 #   GET https://kzppa-platform.vercel.app/api/cron/mail-sync   и   /api/cron/outbox
-#   заголовок Authorization: Bearer <CRON_SECRET>
-# Этот workflow — страховка раз в час. Нужен секрет репозитория CRON_SECRET.
+#   заголовок Authorization: Bearer <CRON_SECRET>. Нужен секрет репозитория CRON_SECRET.
 name: scheduler
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 concurrency:
   group: scheduler
